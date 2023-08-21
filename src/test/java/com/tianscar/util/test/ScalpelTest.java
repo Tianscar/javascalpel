@@ -28,8 +28,8 @@ public class ScalpelTest {
             ClassPool pool = ClassPool.getDefault();
             CtClass eventQueueCtClass = pool.get("java.awt.EventQueue");
             eventQueueCtClass.defrost();
-            CtMethod invokeLaterCtMethod = eventQueueCtClass.getDeclaredMethod("invokeAndWait");
-            invokeLaterCtMethod.insertBefore("return;");
+            CtMethod invokeAndWaitCtMethod = eventQueueCtClass.getDeclaredMethod("invokeAndWait");
+            invokeAndWaitCtMethod.insertBefore("return;");
             byte[] bytecode = eventQueueCtClass.toBytecode();
             Assertions.assertNull(AWTEvent.class.getClassLoader()); // null is the bootstrap ClassLoader
             Scalpel.defineClass("java.awt.EventQueue",
