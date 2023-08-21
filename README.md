@@ -17,7 +17,7 @@ There are only 3 source files: [Scalpel.java](/src/main/java/com/tianscar/util/S
 ## Usage
 ### Preparation
 You need to do the following steps before using any API of this library to make it working properly:
-1. Make sure you have the native binary file (libjavascalpel) of this library.
+1. Make sure you have the native binary file (`libjavascalpel`) of this library.
 2. Sets the Java property `javascalpel.libjvm.pathname` to the absolute path of `libjvm` (on Windows jvm.dll, on macOS libjvm.dylib, etc.).
 3. Sets the Java property `javascalpel.libjavascalpel.pathname` to the absolute path of `libjavascalpel`.
 
