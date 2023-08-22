@@ -9,6 +9,7 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.AccessibleObject;
 import java.lang.reflect.InvocationTargetException;
+import java.nio.ByteBuffer;
 import java.security.ProtectionDomain;
 
 public final class Scalpel {
@@ -772,17 +773,39 @@ public final class Scalpel {
 
     // ---------------- Class ----------------
 
-    public static Class<?> defineClass(String name, ClassLoader classLoader, byte[] bytes, int offset, int length, ProtectionDomain protectionDomain) {
+    public static Class<?> defineClass(String name, ClassLoader classLoader, byte[] bytecode, int offset, int length, ProtectionDomain protectionDomain) {
         if (classLoader != null) {
             try {
                 Method method = ClassLoader.class.getDeclaredMethod("defineClass", String.class, byte[].class, int.class, int.class, ProtectionDomain.class);
-                return (Class<?>) invokeObjectMethod(classLoader, method, name, bytes, offset, length, protectionDomain);
+                return (Class<?>) invokeObjectMethod(classLoader, method, name, bytecode, offset, length, protectionDomain);
             } catch (InvocationTargetException | NoSuchMethodException ignored) {
             }
         }
-        return JVM_DefineClass(name.replace('.', '/'), classLoader, bytes, offset, length, protectionDomain);
+        return JVM_DefineClass(name.replace('.', '/'), classLoader, bytecode, offset, length, protectionDomain);
+    }
+
+    public static Class<?> defineClass(String name, ClassLoader classLoader, ByteBuffer bytecode, ProtectionDomain protectionDomain) {
+        if (classLoader != null) {
+            try {
+                Method method = ClassLoader.class.getDeclaredMethod("defineClass", String.class, ByteBuffer.class, ProtectionDomain.class);
+                return (Class<?>) invokeObjectMethod(classLoader, method, name, bytecode, protectionDomain);
+            } catch (InvocationTargetException | NoSuchMethodException ignored) {
+            }
+        }
+        int length = bytecode.remaining();
+        if (bytecode.isDirect()) return JVM_DefineClass(name.replace('.', '/'), classLoader, bytecode, length, protectionDomain);
+        else if (bytecode.hasArray()) {
+            return JVM_DefineClass(name.replace('.', '/'), classLoader, bytecode.array(),
+                    bytecode.position() + bytecode.arrayOffset(), length, protectionDomain);
+        }
+        else {
+            byte[] array = new byte[length];
+            bytecode.get(array);
+            return JVM_DefineClass(name.replace('.', '/'), classLoader, array, 0, length, protectionDomain);
+        }
     }
 
     private static native Class<?> JVM_DefineClass(String name, ClassLoader loader, byte[] buf, int off, int len, ProtectionDomain pd);
+    private static native Class<?> JVM_DefineClass(String name, ClassLoader loader, ByteBuffer buf, int len, ProtectionDomain pd);
 
 }

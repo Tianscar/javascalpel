@@ -556,8 +556,16 @@ JNIEXPORT jdouble JNICALL Java_com_tianscar_util_Scalpel_CallStaticDoubleMethod
  * Method:    JVM_DefineClass
  * Signature: (Ljava/lang/String;Ljava/lang/ClassLoader;[BIILjava/security/ProtectionDomain;)Ljava/lang/Class;
  */
-JNIEXPORT jclass JNICALL Java_com_tianscar_util_Scalpel_JVM_1DefineClass
+JNIEXPORT jclass JNICALL Java_com_tianscar_util_Scalpel_JVM_1DefineClass__Ljava_lang_String_2Ljava_lang_ClassLoader_2_3BIILjava_security_ProtectionDomain_2
   (JNIEnv *, jclass, jstring, jobject, jbyteArray, jint, jint, jobject);
+
+/*
+ * Class:     com_tianscar_util_Scalpel
+ * Method:    JVM_DefineClass
+ * Signature: (Ljava/lang/String;Ljava/lang/ClassLoader;Ljava/nio/ByteBuffer;ILjava/security/ProtectionDomain;)Ljava/lang/Class;
+ */
+JNIEXPORT jclass JNICALL Java_com_tianscar_util_Scalpel_JVM_1DefineClass__Ljava_lang_String_2Ljava_lang_ClassLoader_2Ljava_nio_ByteBuffer_2ILjava_security_ProtectionDomain_2
+  (JNIEnv *, jclass, jstring, jobject, jobject, jint, jobject);
 
 #ifdef __cplusplus
 }

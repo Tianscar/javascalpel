@@ -50,16 +50,30 @@ static jmethodID Double_doubleValue_methodID;
 static jmethodID Executable_getParameterTypes_methodID;
 static jmethodID Executable_isVarArgs_methodID;
 
+typedef jclass (*JVM_DefineClass_function)(JNIEnv *env, const char *name, jobject loader, const jbyte *buf, jsize len, jobject pd);
+
+static JVM_DefineClass_function JVM_DefineClass;
+
 JNIEXPORT jint JNICALL
 JNI_OnLoad(JavaVM *vm, void *reserved) {
     (void) reserved;
     JNIEnv* env;
     if ((*vm)->GetEnv(vm, (void**) &env, JNI_VERSION_1_1) != JNI_OK) return -1;
 
+#if defined(_MSC_VER) || defined(__MINGW32__)
+    HMODULE handle = GetModuleHandle("jvm.dll");
+    JVM_DefineClass = (JVM_DefineClass_function) GetProcAddressA(handle, "JVM_DefineClass");
+    // see https://github.com/dorkbox/JNA/blob/Version_1.2/src/dorkbox/jna/ClassUtils.java#L88
+    if (!JVM_DefineClass) JVM_DefineClass = (JVM_DefineClass_function) GetProcAddressA(handle, "_JVM_DefineClass@24");
+#else
+    JVM_DefineClass = (JVM_DefineClass_function) dlsym(NULL, "JVM_DefineClass");
+#endif
+    if (!JVM_DefineClass) return -1;
+
     IllegalArgumentException_class = (*env)->NewGlobalRef(env, (*env)->FindClass(env, "java/lang/IllegalArgumentException"));
     OutOfMemoryError_class = (*env)->NewGlobalRef(env, (*env)->FindClass(env, "java/lang/OutOfMemoryError"));
 
-    jclass Class_class = (*env)->NewGlobalRef(env, (*env)->FindClass(env, "java/lang/Class"));
+    jclass Class_class = (*env)->FindClass(env, "java/lang/Class");
     if ((*env)->ExceptionOccurred(env)) return -1;
     Class_getComponentType_methodID = (*env)->GetMethodID(env, Class_class, "getComponentType", "()Ljava/lang/Class;");
     if ((*env)->ExceptionOccurred(env)) return -1;
@@ -140,6 +154,9 @@ JNI_OnUnload(JavaVM *vm, void *reserved) {
     (void) reserved;
     JNIEnv* env;
     if ((*vm)->GetEnv(vm, (void**) &env, JNI_VERSION_1_1) != JNI_OK) return;
+
+    (*env)->DeleteGlobalRef(env, IllegalArgumentException_class);
+    (*env)->DeleteGlobalRef(env, OutOfMemoryError_class);
 
     (*env)->DeleteGlobalRef(env, void_class);
 
@@ -860,23 +877,32 @@ JNIEXPORT jdouble JNICALL Java_com_tianscar_util_Scalpel_CallStaticDoubleMethod
     else return (jdouble) 0;
 }
 
-typedef jclass (*JVM_DefineClass_function)(JNIEnv *env, const char *name, jobject loader, const jbyte *buf,
-                                           jsize len, jobject pd);
-JNIEXPORT jclass JNICALL Java_com_tianscar_util_Scalpel_JVM_1DefineClass
+JNIEXPORT jclass JNICALL Java_com_tianscar_util_Scalpel_JVM_1DefineClass__Ljava_lang_String_2Ljava_lang_ClassLoader_2_3BIILjava_security_ProtectionDomain_2
         (JNIEnv *env, jclass unused, jstring jname, jobject loader, jbyteArray jbuf, jint off, jint len, jobject pd) {
     (void) unused;
     const char *name = (*env)->GetStringUTFChars(env, jname, NULL);
+    if ((*env)->ExceptionOccurred(env)) return NULL;
     jbyte *buf = malloc(len);
+    if (!buf) {
+        (*env)->ReleaseStringUTFChars(env, jname, name);
+        (*env)->ThrowNew(env, OutOfMemoryError_class, NULL);
+        return NULL;
+    }
     (*env)->GetByteArrayRegion(env, jbuf, off, len, buf);
-#if defined(_MSC_VER) || defined(__MINGW32__)
-    JVM_DefineClass_function JVM_DefineClass = (JVM_DefineClass_function) GetProcAddress(GetModuleHandle(NULL), "JVM_DefineClass");
-    // see https://github.com/dorkbox/JNA/blob/Version_1.2/src/dorkbox/jna/ClassUtils.java#L88
-    if (!JVM_DefineClass) JVM_DefineClass = (JVM_DefineClass_function) GetProcAddress(GetModuleHandle(NULL), "_JVM_DefineClass@24");
-#else
-    JVM_DefineClass_function JVM_DefineClass = (JVM_DefineClass_function) dlsym(NULL, "JVM_DefineClass");
-#endif
     jclass clazz = JVM_DefineClass(env, name, loader, buf, len, pd);
     (*env)->ReleaseStringUTFChars(env, jname, name);
     free(buf);
+    return clazz;
+}
+
+JNIEXPORT jclass JNICALL Java_com_tianscar_util_Scalpel_JVM_1DefineClass__Ljava_lang_String_2Ljava_lang_ClassLoader_2Ljava_nio_ByteBuffer_2ILjava_security_ProtectionDomain_2
+        (JNIEnv *env, jclass unused, jstring jname, jobject loader, jobject jbuf, jint len, jobject pd) {
+    (void) unused;
+    const char *name = (*env)->GetStringUTFChars(env, jname, NULL);
+    if ((*env)->ExceptionOccurred(env)) return NULL;
+    jbyte *buf = (*env)->GetDirectBufferAddress(env, jbuf);
+    if (buf == (jbyte *) -1) buf = NULL;
+    jclass clazz = JVM_DefineClass(env, name, loader, buf, len, pd);
+    (*env)->ReleaseStringUTFChars(env, jname, name);
     return clazz;
 }
