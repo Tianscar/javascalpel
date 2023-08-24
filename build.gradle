@@ -2,8 +2,8 @@ plugins {
     id 'java'
 }
 
-group = 'com.tianscar'
-version = '1.0.0-SNAPSHOT'
+group = 'com.tianscar.util'
+version = '1.0.0'
 
 repositories {
     mavenCentral()

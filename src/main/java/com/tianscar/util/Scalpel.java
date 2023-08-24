@@ -12,6 +12,17 @@ import java.lang.reflect.InvocationTargetException;
 import java.nio.ByteBuffer;
 import java.security.ProtectionDomain;
 
+import static java.lang.reflect.Modifier.isStatic;
+
+/**
+ * <p>A simple tool which designed to help deal with some problems (e.g. unresolved internal bugs; strong encapsulation in Java 16+) in the use of JRE without any extra configurations (e.g. javaagent; <code>--add-opens</code>) or modify and/or recompile the JRE files.
+ *
+ * <p>This library currently contains the following features:
+ * <ol>
+ * <li>Bypass the strong encapsulation in Java 16+.</li>
+ * <li>Define Java Class with any ClassLoader (including the bootstrap ClassLoader) at runtime.</li>
+ * </ol>
+ */
 public final class Scalpel {
 
 
@@ -43,6 +54,22 @@ public final class Scalpel {
             unsafe = null;
         }
         UNSAFE = unsafe;
+    }
+
+    
+    // ---------------- Lookup ----------------
+
+    private static final MethodHandles.Lookup LOOKUP;
+    static {
+        MethodHandles.Lookup lookup;
+        try {
+            Field field = MethodHandles.Lookup.class.getDeclaredField("IMPL_LOOKUP");
+            if (trySetAccessible(field)) lookup = (MethodHandles.Lookup) field.get(null);
+            else lookup = null;
+        } catch (NoSuchFieldException | IllegalAccessException e) {
+            lookup = null;
+        }
+        LOOKUP = lookup;
     }
 
 
@@ -90,9 +117,10 @@ public final class Scalpel {
      * @return {@code true} if the {@code accessible} flag is set to {@code true};
      *         {@code false} if access cannot be enabled.
      * @throws SecurityException if the request is denied by the security manager
+     * @throws NullPointerException if the specified accessible object is null
      *
      */
-    public static boolean trySetAccessible(AccessibleObject accessible) {
+    public static boolean trySetAccessible(AccessibleObject accessible) throws SecurityException, NullPointerException {
         try {
             // Java 9
             return (boolean) AccessibleObject.class.getDeclaredMethod("trySetAccessible").invoke(accessible);
@@ -110,9 +138,10 @@ public final class Scalpel {
      *
      * @throws InstantiationException    if the class that declares the
      *           underlying constructor represents an abstract class.
+     * @throws NullPointerException    if the specified class is null
      */
     @SuppressWarnings("unchecked")
-    public static <T> T allocateInstance(Class<T> clazz) throws InstantiationException {
+    public static <T> T allocateInstance(Class<T> clazz) throws InstantiationException, NullPointerException {
         if (UNSAFE == null) return AllocObject(clazz);
         else return (T) UNSAFE.allocateInstance(clazz);
     }
@@ -130,7 +159,7 @@ public final class Scalpel {
      *
      * <p>If the constructor's declaring class is an inner class in a
      * non-static context, the first argument to the constructor needs
-     * to be the enclosing instance; see section {&#064;jls 15.9.3} of
+     * to be the enclosing instance; see section 15.9.3 of
      * <cite>The Java Language Specification</cite>.
      *
      * <p>If the required access and argument checks succeed and the
@@ -155,6 +184,7 @@ public final class Scalpel {
      *              cannot be converted to the corresponding formal
      *              parameter type by a method invocation conversion; if
      *              this constructor pertains to an enum class.
+     * @throws    NullPointerException if the specified constructor is null
      * @throws    InstantiationException    if the class that declares the
      *              underlying constructor represents an abstract class.
      * @throws    InvocationTargetException if the underlying constructor
@@ -162,12 +192,290 @@ public final class Scalpel {
      * @throws    ExceptionInInitializerError if the initialization provoked
      *              by this method fails.
      */
-    public static <T> T newInstance(Constructor<T> constructor, Object... args) throws InstantiationException, InvocationTargetException {
+    public static <T> T newInstance(Constructor<T> constructor, Object... args) throws InstantiationException, InvocationTargetException,
+            NullPointerException, IllegalArgumentException, ExceptionInInitializerError {
         try {
             if (trySetAccessible(constructor)) return constructor.newInstance(args);
         } catch (IllegalAccessException ignored) {
         }
         return NewObject(constructor.getDeclaringClass(), constructor, args);
+    }
+
+    /**
+     * Gets the value of a static or instance non-primitive field.
+     *
+     * @param object the object to extract the non-primitive value
+     * from
+     * @return the value of the non-primitive field
+     *
+     * @throws    IllegalArgumentException  if the specified object is not
+     *              an instance of the class or interface declaring the
+     *              underlying field (or a subclass or implementor
+     *              thereof), or if the field value is primitive.
+     * @throws    NullPointerException      if the specified field is null, or the specified object is null
+     *              and the field is an instance field.
+     * @throws    ExceptionInInitializerError if the initialization provoked
+     *              by this method fails.
+     *
+     * @see #getField(Object, Field)
+     */
+    public static Object getObjectField(Object object, Field field) throws IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (field.getType().isPrimitive()) throw new IllegalArgumentException("Illegal field type; expected non-primitive");
+        try {
+            if (trySetAccessible(field)) return field.get(object);
+        } catch (IllegalAccessException ignored) {
+        }
+        return isStatic(field.getModifiers()) ?
+                GetStaticObjectField(field.getDeclaringClass(), field) :
+                GetObjectField(object, field);
+    }
+
+    /**
+     * Gets the value of a static or instance {@code boolean} field.
+     *
+     * @param object the object to extract the {@code boolean} value
+     * from
+     * @return the value of the {@code boolean} field
+     * 
+     * @throws    IllegalArgumentException  if the specified object is not
+     *              an instance of the class or interface declaring the
+     *              underlying field (or a subclass or implementor
+     *              thereof), or if the field value cannot be
+     *              converted to the type {@code boolean} by a
+     *              widening conversion.
+     * @throws    NullPointerException      if the specified field is null, or the specified object is null
+     *              and the field is an instance field.
+     * @throws    ExceptionInInitializerError if the initialization provoked
+     *              by this method fails.
+     *
+     * @see #getField(Object, Field)
+     */
+    public static boolean getBooleanField(Object object, Field field) throws IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (field.getType() != boolean.class) throw new IllegalArgumentException("Illegal field type; expected boolean");
+        try {
+            if (trySetAccessible(field)) return field.getBoolean(object);
+        } catch (IllegalAccessException ignored) {
+        }
+        return isStatic(field.getModifiers()) ?
+                GetStaticBooleanField(field.getDeclaringClass(), field) :
+                GetBooleanField(object, field);
+    }
+
+    /**
+     * Gets the value of a static or instance {@code byte} field.
+     *
+     * @param object the object to extract the {@code byte} value
+     * from
+     * @return the value of the {@code byte} field
+     *
+     * @throws    IllegalArgumentException  if the specified object is not
+     *              an instance of the class or interface declaring the
+     *              underlying field (or a subclass or implementor
+     *              thereof), or if the field value cannot be
+     *              converted to the type {@code byte} by a
+     *              widening conversion.
+     * @throws    NullPointerException      if the specified field is null, or the specified object is null
+     *              and the field is an instance field.
+     * @throws    ExceptionInInitializerError if the initialization provoked
+     *              by this method fails.
+     *
+     * @see #getField(Object, Field)
+     */
+    public static byte getByteField(Object object, Field field) throws IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (field.getType() != byte.class) throw new IllegalArgumentException("Illegal field type; expected byte");
+        try {
+            if (trySetAccessible(field)) return field.getByte(object);
+        } catch (IllegalAccessException ignored) {
+        }
+        return isStatic(field.getModifiers()) ?
+                GetStaticByteField(field.getDeclaringClass(), field) :
+                GetByteField(object, field);
+    }
+
+    /**
+     * Gets the value of a static or instance {@code char} field.
+     *
+     * @param object the object to extract the {@code char} value
+     * from
+     * @return the value of the {@code char} field
+     *
+     * @throws    IllegalArgumentException  if the specified object is not
+     *              an instance of the class or interface declaring the
+     *              underlying field (or a subclass or implementor
+     *              thereof), or if the field value cannot be
+     *              converted to the type {@code char} by a
+     *              widening conversion.
+     * @throws    NullPointerException      if the specified field is null, or the specified object is null
+     *              and the field is an instance field.
+     * @throws    ExceptionInInitializerError if the initialization provoked
+     *              by this method fails.
+     *
+     * @see #getField(Object, Field)
+     */
+    public static char getCharField(Object object, Field field) throws IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (field.getType() != char.class) throw new IllegalArgumentException("Illegal field type; expected char");
+        try {
+            if (trySetAccessible(field)) return field.getChar(object);
+        } catch (IllegalAccessException ignored) {
+        }
+        return isStatic(field.getModifiers()) ?
+                GetStaticCharField(field.getDeclaringClass(), field) :
+                GetCharField(object, field);
+    }
+
+    /**
+     * Gets the value of a static or instance {@code short} field.
+     *
+     * @param object the object to extract the {@code short} value
+     * from
+     * @return the value of the {@code short} field
+     *
+     * @throws    IllegalArgumentException  if the specified object is not
+     *              an instance of the class or interface declaring the
+     *              underlying field (or a subclass or implementor
+     *              thereof), or if the field value cannot be
+     *              converted to the type {@code short} by a
+     *              widening conversion.
+     * @throws    NullPointerException      if the specified field is null, or the specified object is null
+     *              and the field is an instance field.
+     * @throws    ExceptionInInitializerError if the initialization provoked
+     *              by this method fails.
+     *
+     * @see #getField(Object, Field)
+     */
+    public static short getShortField(Object object, Field field) throws IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (field.getType() != short.class) throw new IllegalArgumentException("Illegal field type; expected short");
+        try {
+            if (trySetAccessible(field)) return field.getShort(object);
+        } catch (IllegalAccessException ignored) {
+        }
+        return isStatic(field.getModifiers()) ?
+                GetStaticShortField(field.getDeclaringClass(), field) :
+                GetShortField(object, field);
+    }
+
+    /**
+     * Gets the value of a static or instance {@code int} field.
+     *
+     * @param object the object to extract the {@code int} value
+     * from
+     * @return the value of the {@code int} field
+     *
+     * @throws    IllegalArgumentException  if the specified object is not
+     *              an instance of the class or interface declaring the
+     *              underlying field (or a subclass or implementor
+     *              thereof), or if the field value cannot be
+     *              converted to the type {@code int} by a
+     *              widening conversion.
+     * @throws    NullPointerException      if the specified field is null, or the specified object is null
+     *              and the field is an instance field.
+     * @throws    ExceptionInInitializerError if the initialization provoked
+     *              by this method fails.
+     *
+     * @see #getField(Object, Field)
+     */
+    public static int getIntField(Object object, Field field) throws IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (field.getType() != int.class) throw new IllegalArgumentException("Illegal field type; expected int");
+        try {
+            if (trySetAccessible(field)) return field.getInt(object);
+        } catch (IllegalAccessException ignored) {
+        }
+        return isStatic(field.getModifiers()) ?
+                GetStaticIntField(field.getDeclaringClass(), field) :
+                GetIntField(object, field);
+    }
+
+    /**
+     * Gets the value of a static or instance {@code long} field.
+     *
+     * @param object the object to extract the {@code long} value
+     * from
+     * @return the value of the {@code long} field
+     *
+     * @throws    IllegalArgumentException  if the specified object is not
+     *              an instance of the class or interface declaring the
+     *              underlying field (or a subclass or implementor
+     *              thereof), or if the field value cannot be
+     *              converted to the type {@code long} by a
+     *              widening conversion.
+     * @throws    NullPointerException      if the specified field is null, or the specified object is null
+     *              and the field is an instance field.
+     * @throws    ExceptionInInitializerError if the initialization provoked
+     *              by this method fails.
+     *
+     * @see #getField(Object, Field)
+     */
+    public static long getLongField(Object object, Field field) throws IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (field.getType() != long.class) throw new IllegalArgumentException("Illegal field type; expected long");
+        try {
+            if (trySetAccessible(field)) return field.getLong(object);
+        } catch (IllegalAccessException ignored) {
+        }
+        return isStatic(field.getModifiers()) ?
+                GetStaticLongField(field.getDeclaringClass(), field) :
+                GetLongField(object, field);
+    }
+
+    /**
+     * Gets the value of a static or instance {@code float} field.
+     *
+     * @param object the object to extract the {@code float} value
+     * from
+     * @return the value of the {@code float} field
+     *
+     * @throws    IllegalArgumentException  if the specified object is not
+     *              an instance of the class or interface declaring the
+     *              underlying field (or a subclass or implementor
+     *              thereof), or if the field value cannot be
+     *              converted to the type {@code float} by a
+     *              widening conversion.
+     * @throws    NullPointerException      if the specified field is null, or the specified object is null
+     *              and the field is an instance field.
+     * @throws    ExceptionInInitializerError if the initialization provoked
+     *              by this method fails.
+     *
+     * @see #getField(Object, Field)
+     */
+    public static float getFloatField(Object object, Field field) throws IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (field.getType() != float.class) throw new IllegalArgumentException("Illegal field type; expected float");
+        try {
+            if (trySetAccessible(field)) return field.getFloat(object);
+        } catch (IllegalAccessException ignored) {
+        }
+        return isStatic(field.getModifiers()) ?
+                GetStaticFloatField(field.getDeclaringClass(), field) :
+                GetFloatField(object, field);
+    }
+
+    /**
+     * Gets the value of a static or instance {@code double} field.
+     *
+     * @param object the object to extract the {@code double} value
+     * from
+     * @return the value of the {@code double} field
+     *
+     * @throws    IllegalArgumentException  if the specified object is not
+     *              an instance of the class or interface declaring the
+     *              underlying field (or a subclass or implementor
+     *              thereof), or if the field value cannot be
+     *              converted to the type {@code double} by a
+     *              widening conversion.
+     * @throws    NullPointerException      if the specified field is null, or the specified object is null
+     *              and the field is an instance field.
+     * @throws    ExceptionInInitializerError if the initialization provoked
+     *              by this method fails.
+     *
+     * @see #getField(Object, Field)
+     */
+    public static double getDoubleField(Object object, Field field) throws IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (field.getType() != double.class) throw new IllegalArgumentException("Illegal field type; expected double");
+        try {
+            if (trySetAccessible(field)) return field.getDouble(object);
+        } catch (IllegalAccessException ignored) {
+        }
+        return isStatic(field.getModifiers()) ?
+                GetStaticDoubleField(field.getDeclaringClass(), field) :
+                GetDoubleField(object, field);
     }
 
     /**
@@ -177,7 +485,7 @@ public final class Scalpel {
      *
      * <p>The underlying field's value is obtained as follows:
      *
-     * <p>If the underlying field is a static field, the {@code obj} argument
+     * <p>If the underlying field is a static field, the {@code object} argument
      * is ignored; it may be null.
      *
      * <p>Otherwise, the underlying field is an instance field.  If the
@@ -209,227 +517,422 @@ public final class Scalpel {
      * @throws    IllegalArgumentException  if the specified object is not an
      *              instance of the class or interface declaring the underlying
      *              field (or a subclass or implementor thereof).
-     * @throws    NullPointerException      if the specified object is null
+     * @throws    NullPointerException      if the specified field is null, or the specified object is null
      *              and the field is an instance field.
      * @throws    ExceptionInInitializerError if the initialization provoked
      *              by this method fails.
      */
-    public static Object getObjectField(Object object, Field field) {
+    public static Object getField(Object object, Field field) throws IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
         try {
             if (trySetAccessible(field)) return field.get(object);
         } catch (IllegalAccessException ignored) {
         }
-        return object == null ? GetStaticObjectField(field.getDeclaringClass(), field) : GetObjectField(object, field);
-    }
-
-    public static boolean getBooleanField(Object object, Field field) {
-        try {
-            if (trySetAccessible(field)) return field.getBoolean(object);
-        } catch (IllegalAccessException ignored) {
+        Class<?> fieldType = field.getType();
+        if (isStatic(field.getModifiers())) {
+            if (fieldType == boolean.class) return GetStaticBooleanField(field.getDeclaringClass(), field);
+            else if (fieldType == byte.class) return GetStaticByteField(field.getDeclaringClass(), field);
+            else if (fieldType == char.class) return GetStaticCharField(field.getDeclaringClass(), field);
+            else if (fieldType == short.class) return GetStaticShortField(field.getDeclaringClass(), field);
+            else if (fieldType == int.class) return GetStaticIntField(field.getDeclaringClass(), field);
+            else if (fieldType == long.class) return GetStaticLongField(field.getDeclaringClass(), field);
+            else if (fieldType == float.class) return GetStaticFloatField(field.getDeclaringClass(), field);
+            else if (fieldType == double.class) return GetStaticDoubleField(field.getDeclaringClass(), field);
+            else return GetStaticObjectField(field.getDeclaringClass(), field);
         }
-        return object == null ? GetStaticBooleanField(field.getDeclaringClass(), field) : GetBooleanField(object, field);
-    }
-
-    public static byte getByteField(Object object, Field field) {
-        try {
-            if (trySetAccessible(field)) return field.getByte(object);
-        } catch (IllegalAccessException ignored) {
+        else {
+            if (fieldType == boolean.class) return GetBooleanField(object, field);
+            else if (fieldType == byte.class) return GetByteField(object, field);
+            else if (fieldType == char.class) return GetCharField(object, field);
+            else if (fieldType == short.class) return GetShortField(object, field);
+            else if (fieldType == int.class) return GetIntField(object, field);
+            else if (fieldType == long.class) return GetLongField(object, field);
+            else if (fieldType == float.class) return GetFloatField(object, field);
+            else if (fieldType == double.class) return GetDoubleField(object, field);
+            else return GetObjectField(object, field);
         }
-        return object == null ? GetStaticByteField(field.getDeclaringClass(), field) : GetByteField(object, field);
     }
 
-    public static char getCharField(Object object, Field field) {
-        try {
-            if (trySetAccessible(field)) return field.getChar(object);
-        } catch (IllegalAccessException ignored) {
-        }
-        return object == null ? GetStaticCharField(field.getDeclaringClass(), field) : GetCharField(object, field);
-    }
-
-    public static short getShortField(Object object, Field field) {
-        try {
-            if (trySetAccessible(field)) return field.getShort(object);
-        } catch (IllegalAccessException ignored) {
-        }
-        return object == null ? GetStaticShortField(field.getDeclaringClass(), field) : GetShortField(object, field);
-    }
-
-    public static int getIntField(Object object, Field field) {
-        try {
-            if (trySetAccessible(field)) return field.getInt(object);
-        } catch (IllegalAccessException ignored) {
-        }
-        return object == null ? GetStaticIntField(field.getDeclaringClass(), field) : GetIntField(object, field);
-    }
-
-    public static long getLongField(Object object, Field field) {
-        try {
-            if (trySetAccessible(field)) return field.getLong(object);
-        } catch (IllegalAccessException ignored) {
-        }
-        return object == null ? GetStaticLongField(field.getDeclaringClass(), field) : GetLongField(object, field);
-    }
-
-    public static float getFloatField(Object object, Field field) {
-        try {
-            if (trySetAccessible(field)) return field.getFloat(object);
-        } catch (IllegalAccessException ignored) {
-        }
-        return object == null ? GetStaticFloatField(field.getDeclaringClass(), field) : GetFloatField(object, field);
-    }
-
-    public static double getDoubleField(Object object, Field field) {
-        try {
-            if (trySetAccessible(field)) return field.getDouble(object);
-        } catch (IllegalAccessException ignored) {
-        }
-        return object == null ? GetStaticDoubleField(field.getDeclaringClass(), field) : GetDoubleField(object, field);
-    }
-
-    public static Object getField(Object object, Field field) {
-        Class<?> clazz = field.getType();
-        if (clazz == boolean.class) return getBooleanField(object, field);
-        else if (clazz == byte.class) return getByteField(object, field);
-        else if (clazz == char.class) return getCharField(object, field);
-        else if (clazz == short.class) return getShortField(object, field);
-        else if (clazz == int.class) return getIntField(object, field);
-        else if (clazz == long.class) return getLongField(object, field);
-        else if (clazz == float.class) return getFloatField(object, field);
-        else if (clazz == double.class) return getDoubleField(object, field);
-        else return getObjectField(object, field);
-    }
-
-    public static void setObjectField(Object object, Field field, Object value) {
+    /**
+     * Sets the value of a field as an {@code Object} on the specified object.
+     *
+     * @param object the object whose field should be modified
+     * @param value the new value for the field of {@code object}
+     * being modified
+     *
+     * @throws    IllegalArgumentException  if the specified object is not an
+     *              instance of the class or interface declaring the underlying
+     *              field (or a subclass or implementor thereof),
+     *              or if an unwrapping conversion fails.
+     * @throws    NullPointerException      if the specified field is null or the specified object is null
+     *              and the field is an instance field.
+     * @throws    ExceptionInInitializerError if the initialization provoked
+     *              by this method fails.
+     *
+     * @see #setField(Object, Field, Object)
+     */
+    public static void setObjectField(Object object, Field field, Object value) throws IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (!field.getType().isAssignableFrom(value.getClass()))
+            throw new IllegalArgumentException("Illegal field type; expected " + field.getType().getTypeName());
         try {
             if (trySetAccessible(field)) {
                 field.set(object, value);
                 return;
             }
+        } catch (IllegalAccessException ignored) {
         }
-        catch (IllegalAccessException ignored) {
-        }
-        if (object == null) SetStaticObjectField(field.getDeclaringClass(), field, value);
+        if (isStatic(field.getModifiers())) SetStaticObjectField(field.getDeclaringClass(), field, value);
         else SetObjectField(object, field, value);
     }
 
-    public static void setBooleanField(Object object, Field field, boolean value) {
+    /**
+     * Sets the value of a field as a {@code boolean} on the specified object.
+     *
+     * @param object the object whose field should be modified
+     * @param value the new value for the field of {@code object}
+     * being modified
+     *
+     * @throws    IllegalArgumentException  if the specified object is not an
+     *              instance of the class or interface declaring the underlying
+     *              field (or a subclass or implementor thereof),
+     *              or if an unwrapping conversion fails.
+     * @throws    NullPointerException      if the specified field is null or the specified object is null
+     *              and the field is an instance field.
+     * @throws    ExceptionInInitializerError if the initialization provoked
+     *              by this method fails.
+     *
+     * @see #setField(Object, Field, Object)
+     */
+    public static void setBooleanField(Object object, Field field, boolean value) throws IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (field.getType() != boolean.class) throw new IllegalArgumentException("Illegal field type; expected boolean");
         try {
             if (trySetAccessible(field)) {
-                field.set(object, value);
+                field.setBoolean(object, value);
                 return;
             }
+        } catch (IllegalAccessException ignored) {
         }
-        catch (IllegalAccessException ignored) {
-        }
-        if (object == null) SetStaticBooleanField(field.getDeclaringClass(), field, value);
+        if (isStatic(field.getModifiers())) SetStaticBooleanField(field.getDeclaringClass(), field, value);
         else SetBooleanField(object, field, value);
     }
 
-    public static void setByteField(Object object, Field field, byte value) {
+    /**
+     * Sets the value of a field as a {@code byte} on the specified object.
+     *
+     * @param object the object whose field should be modified
+     * @param value the new value for the field of {@code object}
+     * being modified
+     *
+     * @throws    IllegalArgumentException  if the specified object is not an
+     *              instance of the class or interface declaring the underlying
+     *              field (or a subclass or implementor thereof),
+     *              or if an unwrapping conversion fails.
+     * @throws    NullPointerException      if the specified field is null or the specified object is null
+     *              and the field is an instance field.
+     * @throws    ExceptionInInitializerError if the initialization provoked
+     *              by this method fails.
+     *
+     * @see #setField(Object, Field, Object)
+     */
+    public static void setByteField(Object object, Field field, byte value) throws IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (field.getType() != byte.class) throw new IllegalArgumentException("Illegal field type; expected byte");
         try {
             if (trySetAccessible(field)) {
-                field.set(object, value);
+                field.setByte(object, value);
                 return;
             }
+        } catch (IllegalAccessException ignored) {
         }
-        catch (IllegalAccessException ignored) {
-        }
-        if (object == null) SetStaticByteField(field.getDeclaringClass(), field, value);
+        if (isStatic(field.getModifiers())) SetStaticByteField(field.getDeclaringClass(), field, value);
         else SetByteField(object, field, value);
     }
 
-    public static void setCharField(Object object, Field field, char value) {
+    /**
+     * Sets the value of a field as a {@code char} on the specified object.
+     *
+     * @param object the object whose field should be modified
+     * @param value the new value for the field of {@code object}
+     * being modified
+     *
+     * @throws    IllegalArgumentException  if the specified object is not an
+     *              instance of the class or interface declaring the underlying
+     *              field (or a subclass or implementor thereof),
+     *              or if an unwrapping conversion fails.
+     * @throws    NullPointerException      if the specified field is null or the specified object is null
+     *              and the field is an instance field.
+     * @throws    ExceptionInInitializerError if the initialization provoked
+     *              by this method fails.
+     *
+     * @see #setField(Object, Field, Object)
+     */
+    public static void setCharField(Object object, Field field, char value) throws IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (field.getType() != char.class) throw new IllegalArgumentException("Illegal field type; expected char");
         try {
             if (trySetAccessible(field)) {
-                field.set(object, value);
+                field.setChar(object, value);
                 return;
             }
+        } catch (IllegalAccessException ignored) {
         }
-        catch (IllegalAccessException ignored) {
-        }
-        if (object == null) SetStaticCharField(field.getDeclaringClass(), field, value);
+        if (isStatic(field.getModifiers())) SetStaticCharField(field.getDeclaringClass(), field, value);
         else SetCharField(object, field, value);
     }
 
-    public static void setShortField(Object object, Field field, short value) {
+    /**
+     * Sets the value of a field as a {@code short} on the specified object.
+     *
+     * @param object the object whose field should be modified
+     * @param value the new value for the field of {@code object}
+     * being modified
+     *
+     * @throws    IllegalArgumentException  if the specified object is not an
+     *              instance of the class or interface declaring the underlying
+     *              field (or a subclass or implementor thereof),
+     *              or if an unwrapping conversion fails.
+     * @throws    NullPointerException      if the specified field is null or the specified object is null
+     *              and the field is an instance field.
+     * @throws    ExceptionInInitializerError if the initialization provoked
+     *              by this method fails.
+     *
+     * @see #setField(Object, Field, Object)
+     */
+    public static void setShortField(Object object, Field field, short value) throws IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (field.getType() != short.class) throw new IllegalArgumentException("Illegal field type; expected short");
         try {
             if (trySetAccessible(field)) {
-                field.set(object, value);
+                field.setShort(object, value);
                 return;
             }
+        } catch (IllegalAccessException ignored) {
         }
-        catch (IllegalAccessException ignored) {
-        }
-        if (object == null) SetStaticShortField(field.getDeclaringClass(), field, value);
+        if (isStatic(field.getModifiers())) SetStaticShortField(field.getDeclaringClass(), field, value);
         else SetShortField(object, field, value);
     }
 
-    public static void setIntField(Object object, Field field, int value) {
+    /**
+     * Sets the value of a field as a {@code int} on the specified object.
+     *
+     * @param object the object whose field should be modified
+     * @param value the new value for the field of {@code object}
+     * being modified
+     *
+     * @throws    IllegalArgumentException  if the specified object is not an
+     *              instance of the class or interface declaring the underlying
+     *              field (or a subclass or implementor thereof),
+     *              or if an unwrapping conversion fails.
+     * @throws    NullPointerException      if the specified field is null or the specified object is null
+     *              and the field is an instance field.
+     * @throws    ExceptionInInitializerError if the initialization provoked
+     *              by this method fails.
+     *
+     * @see #setField(Object, Field, Object)
+     */
+    public static void setIntField(Object object, Field field, int value) throws IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (field.getType() != int.class) throw new IllegalArgumentException("Illegal field type; expected int");
         try {
             if (trySetAccessible(field)) {
-                field.set(object, value);
+                field.setInt(object, value);
                 return;
             }
+        } catch (IllegalAccessException ignored) {
         }
-        catch (IllegalAccessException ignored) {
-        }
-        if (object == null) SetStaticIntField(field.getDeclaringClass(), field, value);
+        if (isStatic(field.getModifiers())) SetStaticIntField(field.getDeclaringClass(), field, value);
         else SetIntField(object, field, value);
     }
 
-    public static void setLongField(Object object, Field field, long value) {
+    /**
+     * Sets the value of a field as a {@code long} on the specified object.
+     *
+     * @param object the object whose field should be modified
+     * @param value the new value for the field of {@code object}
+     * being modified
+     *
+     * @throws    IllegalArgumentException  if the specified object is not an
+     *              instance of the class or interface declaring the underlying
+     *              field (or a subclass or implementor thereof),
+     *              or if an unwrapping conversion fails.
+     * @throws    NullPointerException      if the specified field is null or the specified object is null
+     *              and the field is an instance field.
+     * @throws    ExceptionInInitializerError if the initialization provoked
+     *              by this method fails.
+     *
+     * @see #setField(Object, Field, Object)
+     */
+    public static void setLongField(Object object, Field field, long value) throws IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (field.getType() != long.class) throw new IllegalArgumentException("Illegal field type; expected long");
         try {
             if (trySetAccessible(field)) {
-                field.set(object, value);
+                field.setLong(object, value);
                 return;
             }
+        } catch (IllegalAccessException ignored) {
         }
-        catch (IllegalAccessException ignored) {
-        }
-        if (object == null) SetStaticLongField(field.getDeclaringClass(), field, value);
+        if (isStatic(field.getModifiers())) SetStaticLongField(field.getDeclaringClass(), field, value);
         else SetLongField(object, field, value);
     }
 
-    public static void setFloatField(Object object, Field field, float value) {
+    /**
+     * Sets the value of a field as a {@code float} on the specified object.
+     *
+     * @param object the object whose field should be modified
+     * @param value the new value for the field of {@code object}
+     * being modified
+     *
+     * @throws    IllegalArgumentException  if the specified object is not an
+     *              instance of the class or interface declaring the underlying
+     *              field (or a subclass or implementor thereof),
+     *              or if an unwrapping conversion fails.
+     * @throws    NullPointerException      if the specified field is null or the specified object is null
+     *              and the field is an instance field.
+     * @throws    ExceptionInInitializerError if the initialization provoked
+     *              by this method fails.
+     *
+     * @see #setField(Object, Field, Object)
+     */
+    public static void setFloatField(Object object, Field field, float value) throws IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (field.getType() != float.class) throw new IllegalArgumentException("Illegal field type; expected float");
         try {
             if (trySetAccessible(field)) {
-                field.set(object, value);
+                field.setFloat(object, value);
                 return;
             }
+        } catch (IllegalAccessException ignored) {
         }
-        catch (IllegalAccessException ignored) {
-        }
-        if (object == null) SetStaticFloatField(field.getDeclaringClass(), field, value);
+        if (isStatic(field.getModifiers())) SetStaticFloatField(field.getDeclaringClass(), field, value);
         else SetFloatField(object, field, value);
     }
 
-    public static void setDoubleField(Object object, Field field, double value) {
+    /**
+     * Sets the value of a field as a {@code double} on the specified object.
+     *
+     * @param object the object whose field should be modified
+     * @param value the new value for the field of {@code object}
+     * being modified
+     *
+     * @throws    IllegalArgumentException  if the specified object is not an
+     *              instance of the class or interface declaring the underlying
+     *              field (or a subclass or implementor thereof),
+     *              or if an unwrapping conversion fails.
+     * @throws    NullPointerException      if the specified field is null or the specified object is null
+     *              and the field is an instance field.
+     * @throws    ExceptionInInitializerError if the initialization provoked
+     *              by this method fails.
+     *
+     * @see #setField(Object, Field, Object)
+     */
+    public static void setDoubleField(Object object, Field field, double value) throws IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (field.getType() != double.class) throw new IllegalArgumentException("Illegal field type; expected double");
         try {
             if (trySetAccessible(field)) {
-                field.set(object, value);
+                field.setDouble(object, value);
                 return;
             }
+        } catch (IllegalAccessException ignored) {
         }
-        catch (IllegalAccessException ignored) {
-        }
-        if (object == null) SetStaticDoubleField(field.getDeclaringClass(), field, value);
+        if (isStatic(field.getModifiers())) SetStaticDoubleField(field.getDeclaringClass(), field, value);
         else SetDoubleField(object, field, value);
     }
 
-    public static void setField(Object object, Field field, Object value) {
+    /**
+     * Sets the field represented by this {@code Field} object on the
+     * specified object argument to the specified new value. The new
+     * value is automatically unwrapped if the underlying field has a
+     * primitive type.
+     *
+     * <p>The operation proceeds as follows:
+     *
+     * <p>If the underlying field is static, the {@code obj} argument is
+     * ignored; it may be null.
+     *
+     * <p>Otherwise the underlying field is an instance field.  If the
+     * specified object argument is null, the method throws a
+     * {@code NullPointerException}.  If the specified object argument is not
+     * an instance of the class or interface declaring the underlying
+     * field, the method throws an {@code IllegalArgumentException}.
+     *
+     * <p> Setting a final field in this way
+     * is meaningful only during deserialization or reconstruction of
+     * instances of classes with blank final fields, before they are
+     * made available for access by other parts of a program. Use in
+     * any other context may have unpredictable effects, including cases
+     * in which other parts of a program continue to use the original
+     * value of this field.
+     *
+     * <p>If the underlying field is of a primitive type, an unwrapping
+     * conversion is attempted to convert the new value to a value of
+     * a primitive type.  If this attempt fails, the method throws an
+     * {@code IllegalArgumentException}.
+     *
+     * <p>If, after possible unwrapping, the new value cannot be
+     * converted to the type of the underlying field by an identity or
+     * widening conversion, the method throws an
+     * {@code IllegalArgumentException}.
+     *
+     * <p>If the underlying field is static, the class that declared the
+     * field is initialized if it has not already been initialized.
+     *
+     * <p>The field is set to the possibly unwrapped and widened new value.
+     *
+     * <p>If the field is hidden in the type of {@code object},
+     * the field's value is set according to the preceding rules.
+     *
+     * @param object the object whose field should be modified
+     * @param value the new value for the field of {@code object}
+     * being modified
+     *
+     * @throws    IllegalArgumentException  if the specified object is not an
+     *              instance of the class or interface declaring the underlying
+     *              field (or a subclass or implementor thereof),
+     *              or if an unwrapping conversion fails.
+     * @throws    NullPointerException      if the specified field is null or the specified object is null
+     *              and the field is an instance field.
+     * @throws    ExceptionInInitializerError if the initialization provoked
+     *              by this method fails.
+     */
+    public static void setField(Object object, Field field, Object value) throws IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
         Class<?> fieldType = field.getType();
-        if (fieldType == boolean.class) setBooleanField(object, field, (Boolean) value);
-        else if (fieldType == byte.class) setByteField(object, field, (Byte) value);
-        else if (fieldType == char.class) setCharField(object, field, (Character) value);
-        else if (fieldType == short.class) setShortField(object, field, (Short) value);
-        else if (fieldType == int.class) setIntField(object, field, (Integer) value);
-        else if (fieldType == long.class) setLongField(object, field, (Long) value);
-        else if (fieldType == float.class) setFloatField(object, field, (Float) value);
-        else if (fieldType == double.class) setDoubleField(object, field, (Double) value);
-        else setObjectField(object, field, value);
+        try {
+            if (fieldType == boolean.class) setBooleanField(object, field, (Boolean) value);
+            else if (fieldType == byte.class) setByteField(object, field, (Byte) value);
+            else if (fieldType == char.class) setCharField(object, field, (Character) value);
+            else if (fieldType == short.class) setShortField(object, field, (Short) value);
+            else if (fieldType == int.class) setIntField(object, field, (Integer) value);
+            else if (fieldType == long.class) setLongField(object, field, (Long) value);
+            else if (fieldType == float.class) setFloatField(object, field, (Float) value);
+            else if (fieldType == double.class) setDoubleField(object, field, (Double) value);
+            else setObjectField(object, field, value);
+        } catch (ClassCastException e) {
+            throw new IllegalArgumentException(e);
+        }
     }
-    
-    public static void invokeVoidMethod(Object object, Method method, Object... args) throws InvocationTargetException {
+
+    /**
+     * Invokes the underlying method represented by this {@code Method}
+     * object, on the specified object with the specified parameters.
+     *
+     * @param object  the object the underlying method is invoked from
+     * @param args the arguments used for the method call
+     *
+     * @throws    IllegalArgumentException  if the method is an
+     *              instance method and the specified object argument
+     *              is not an instance of the class or interface
+     *              declaring the underlying method (or of a subclass
+     *              or implementor thereof); if the number of actual
+     *              and formal parameters differ; if an unwrapping
+     *              conversion for primitive arguments fails; or if,
+     *              after possible unwrapping, a parameter value
+     *              cannot be converted to the corresponding formal
+     *              parameter type by a method invocation conversion;
+     *              or if the method had a return value.
+     * @throws    InvocationTargetException if the underlying method
+     *              throws an exception.
+     * @throws    NullPointerException      if the specified method is null,
+     *              or specified object is null and the method is an instance method.
+     * @throws    ExceptionInInitializerError if the initialization
+     * provoked by this method fails.
+     */
+    public static void invokeVoidMethod(Object object, Method method, Object... args)
+            throws InvocationTargetException, IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (method.getReturnType() != void.class && method.getReturnType() != Void.class) throw new IllegalArgumentException("Illegal return type; expected void");
         try {
             if (trySetAccessible(method)) {
                 method.invoke(object, args);
@@ -437,261 +940,1102 @@ public final class Scalpel {
             }
         } catch (IllegalAccessException ignored) {
         }
-        if (object == null) CallStaticVoidMethod(method.getDeclaringClass(), method, args);
+        if (isStatic(method.getModifiers())) CallStaticVoidMethod(method.getDeclaringClass(), method, args);
         else CallVoidMethod(object, method, args);
     }
 
-    public static Object invokeObjectMethod(Object object, Method method, Object... args) throws InvocationTargetException {
+    /**
+     * Invokes the underlying method represented by this {@code Method}
+     * object, on the specified object with the specified parameters.
+     *
+     * @param object  the object the underlying method is invoked from
+     * @param args the arguments used for the method call
+     *
+     * @throws    IllegalArgumentException  if the method is an
+     *              instance method and the specified object argument
+     *              is not an instance of the class or interface
+     *              declaring the underlying method (or of a subclass
+     *              or implementor thereof); if the number of actual
+     *              and formal parameters differ; if an unwrapping
+     *              conversion for primitive arguments fails; or if,
+     *              after possible unwrapping, a parameter value
+     *              cannot be converted to the corresponding formal
+     *              parameter type by a method invocation conversion;
+     *              or if the returned value is primitive.
+     * @throws    InvocationTargetException if the underlying method
+     *              throws an exception.
+     * @throws    NullPointerException      if the specified method is null,
+     *              or specified object is null and the method is an instance method.
+     * @throws    ExceptionInInitializerError if the initialization
+     * provoked by this method fails.
+     */
+    public static Object invokeObjectMethod(Object object, Method method, Object... args)
+            throws InvocationTargetException, IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (method.getReturnType().isPrimitive()) throw new IllegalArgumentException("Illegal return type; expected non-primitive");
         try {
             if (trySetAccessible(method)) return method.invoke(object, args);
         } catch (IllegalAccessException ignored) {
         }
-        if (object == null) return CallStaticObjectMethod(method.getDeclaringClass(), method, args);
+        if (isStatic(method.getModifiers())) return CallStaticObjectMethod(method.getDeclaringClass(), method, args);
         else return CallObjectMethod(object, method, args);
     }
 
-    public static boolean invokeBooleanMethod(Object object, Method method, Object... args) throws InvocationTargetException {
+    /**
+     * Invokes the underlying method represented by this {@code Method}
+     * object, on the specified object with the specified parameters.
+     *
+     * @param object  the object the underlying method is invoked from
+     * @param args the arguments used for the method call
+     *
+     * @throws    IllegalArgumentException  if the method is an
+     *              instance method and the specified object argument
+     *              is not an instance of the class or interface
+     *              declaring the underlying method (or of a subclass
+     *              or implementor thereof); if the number of actual
+     *              and formal parameters differ; if an unwrapping
+     *              conversion for primitive arguments fails; or if,
+     *              after possible unwrapping, a parameter value
+     *              cannot be converted to the corresponding formal
+     *              parameter type by a method invocation conversion;
+     *              or if the returned value cannot be converted to
+     *              the type {@code boolean} by a widening conversion.
+     * @throws    InvocationTargetException if the underlying method
+     *              throws an exception.
+     * @throws    NullPointerException      if the specified method is null,
+     *              or specified object is null and the method is an instance method.
+     * @throws    ExceptionInInitializerError if the initialization
+     * provoked by this method fails.
+     */
+    public static boolean invokeBooleanMethod(Object object, Method method, Object... args)
+            throws InvocationTargetException, IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (method.getReturnType() != boolean.class) throw new IllegalArgumentException("Illegal return type; expected boolean");
         try {
             if (trySetAccessible(method)) return (boolean) method.invoke(object, args);
-        } catch (ClassCastException e) {
-            throw new InvocationTargetException(e);
         } catch (IllegalAccessException ignored) {
         }
-        if (object == null) return CallStaticBooleanMethod(method.getDeclaringClass(), method, args);
+        if (isStatic(method.getModifiers())) return CallStaticBooleanMethod(method.getDeclaringClass(), method, args);
         else return CallBooleanMethod(object, method, args);
     }
 
-    public static byte invokeByteMethod(Object object, Method method, Object... args) throws InvocationTargetException {
+    /**
+     * Invokes the underlying method represented by this {@code Method}
+     * object, on the specified object with the specified parameters.
+     *
+     * @param object  the object the underlying method is invoked from
+     * @param args the arguments used for the method call
+     *
+     * @throws    IllegalArgumentException  if the method is an
+     *              instance method and the specified object argument
+     *              is not an instance of the class or interface
+     *              declaring the underlying method (or of a subclass
+     *              or implementor thereof); if the number of actual
+     *              and formal parameters differ; if an unwrapping
+     *              conversion for primitive arguments fails; or if,
+     *              after possible unwrapping, a parameter value
+     *              cannot be converted to the corresponding formal
+     *              parameter type by a method invocation conversion;
+     *              or if the returned value cannot be converted to
+     *              the type {@code byte} by a widening conversion.
+     * @throws    InvocationTargetException if the underlying method
+     *              throws an exception.
+     * @throws    NullPointerException      if the specified method is null,
+     *              or specified object is null and the method is an instance method.
+     * @throws    ExceptionInInitializerError if the initialization
+     * provoked by this method fails.
+     */
+    public static byte invokeByteMethod(Object object, Method method, Object... args)
+            throws InvocationTargetException, IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (method.getReturnType() != byte.class) throw new IllegalArgumentException("Illegal return type; expected byte");
         try {
             if (trySetAccessible(method)) return (byte) method.invoke(object, args);
-        } catch (ClassCastException e) {
-            throw new InvocationTargetException(e);
         } catch (IllegalAccessException ignored) {
         }
-        if (object == null) return CallStaticByteMethod(method.getDeclaringClass(), method, args);
+        if (isStatic(method.getModifiers())) return CallStaticByteMethod(method.getDeclaringClass(), method, args);
         else return CallByteMethod(object, method, args);
     }
 
-    public static char invokeCharMethod(Object object, Method method, Object... args) throws InvocationTargetException {
+    /**
+     * Invokes the underlying method represented by this {@code Method}
+     * object, on the specified object with the specified parameters.
+     *
+     * @param object  the object the underlying method is invoked from
+     * @param args the arguments used for the method call
+     *
+     * @throws    IllegalArgumentException  if the method is an
+     *              instance method and the specified object argument
+     *              is not an instance of the class or interface
+     *              declaring the underlying method (or of a subclass
+     *              or implementor thereof); if the number of actual
+     *              and formal parameters differ; if an unwrapping
+     *              conversion for primitive arguments fails; or if,
+     *              after possible unwrapping, a parameter value
+     *              cannot be converted to the corresponding formal
+     *              parameter type by a method invocation conversion;
+     *              or if the returned value cannot be converted to
+     *              the type {@code char} by a widening conversion.
+     * @throws    InvocationTargetException if the underlying method
+     *              throws an exception.
+     * @throws    NullPointerException      if the specified method is null,
+     *              or specified object is null and the method is an instance method.
+     * @throws    ExceptionInInitializerError if the initialization
+     * provoked by this method fails.
+     */
+    public static char invokeCharMethod(Object object, Method method, Object... args)
+            throws InvocationTargetException, IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (method.getReturnType() != char.class) throw new IllegalArgumentException("Illegal return type; expected char");
         try {
             if (trySetAccessible(method)) return (char) method.invoke(object, args);
-        } catch (ClassCastException e) {
-            throw new InvocationTargetException(e);
         } catch (IllegalAccessException ignored) {
         }
-        if (object == null) return CallStaticCharMethod(method.getDeclaringClass(), method, args);
+        if (isStatic(method.getModifiers())) return CallStaticCharMethod(method.getDeclaringClass(), method, args);
         else return CallCharMethod(object, method, args);
     }
 
-    public static short invokeShortMethod(Object object, Method method, Object... args) throws InvocationTargetException {
+    /**
+     * Invokes the underlying method represented by this {@code Method}
+     * object, on the specified object with the specified parameters.
+     *
+     * @param object  the object the underlying method is invoked from
+     * @param args the arguments used for the method call
+     *
+     * @throws    IllegalArgumentException  if the method is an
+     *              instance method and the specified object argument
+     *              is not an instance of the class or interface
+     *              declaring the underlying method (or of a subclass
+     *              or implementor thereof); if the number of actual
+     *              and formal parameters differ; if an unwrapping
+     *              conversion for primitive arguments fails; or if,
+     *              after possible unwrapping, a parameter value
+     *              cannot be converted to the corresponding formal
+     *              parameter type by a method invocation conversion;
+     *              or if the returned value cannot be converted to
+     *              the type {@code short} by a widening conversion.
+     * @throws    InvocationTargetException if the underlying method
+     *              throws an exception.
+     * @throws    NullPointerException      if the specified method is null,
+     *              or specified object is null and the method is an instance method.
+     * @throws    ExceptionInInitializerError if the initialization
+     * provoked by this method fails.
+     */
+    public static short invokeShortMethod(Object object, Method method, Object... args)
+            throws InvocationTargetException, IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (method.getReturnType() != short.class) throw new IllegalArgumentException("Illegal return type; expected short");
         try {
             if (trySetAccessible(method)) return (short) method.invoke(object, args);
-        } catch (ClassCastException e) {
-            throw new InvocationTargetException(e);
         } catch (IllegalAccessException ignored) {
         }
-        if (object == null) return CallStaticShortMethod(method.getDeclaringClass(), method, args);
+        if (isStatic(method.getModifiers())) return CallStaticShortMethod(method.getDeclaringClass(), method, args);
         else return CallShortMethod(object, method, args);
     }
 
-    public static int invokeIntMethod(Object object, Method method, Object... args) throws InvocationTargetException {
+    /**
+     * Invokes the underlying method represented by this {@code Method}
+     * object, on the specified object with the specified parameters.
+     *
+     * @param object  the object the underlying method is invoked from
+     * @param args the arguments used for the method call
+     *
+     * @throws    IllegalArgumentException  if the method is an
+     *              instance method and the specified object argument
+     *              is not an instance of the class or interface
+     *              declaring the underlying method (or of a subclass
+     *              or implementor thereof); if the number of actual
+     *              and formal parameters differ; if an unwrapping
+     *              conversion for primitive arguments fails; or if,
+     *              after possible unwrapping, a parameter value
+     *              cannot be converted to the corresponding formal
+     *              parameter type by a method invocation conversion;
+     *              or if the returned value cannot be converted to
+     *              the type {@code int} by a widening conversion.
+     * @throws    InvocationTargetException if the underlying method
+     *              throws an exception.
+     * @throws    NullPointerException      if the specified method is null,
+     *              or specified object is null and the method is an instance method.
+     * @throws    ExceptionInInitializerError if the initialization
+     * provoked by this method fails.
+     */
+    public static int invokeIntMethod(Object object, Method method, Object... args)
+            throws InvocationTargetException, IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (method.getReturnType() != int.class) throw new IllegalArgumentException("Illegal return type; expected int");
         try {
             if (trySetAccessible(method)) return (int) method.invoke(object, args);
-        } catch (ClassCastException e) {
-            throw new InvocationTargetException(e);
         } catch (IllegalAccessException ignored) {
         }
-        if (object == null) return CallStaticIntMethod(method.getDeclaringClass(), method, args);
+        if (isStatic(method.getModifiers())) return CallStaticIntMethod(method.getDeclaringClass(), method, args);
         else return CallIntMethod(object, method, args);
     }
 
-    public static long invokeLongMethod(Object object, Method method, Object... args) throws InvocationTargetException {
+    /**
+     * Invokes the underlying method represented by this {@code Method}
+     * object, on the specified object with the specified parameters.
+     *
+     * @param object  the object the underlying method is invoked from
+     * @param args the arguments used for the method call
+     *
+     * @throws    IllegalArgumentException  if the method is an
+     *              instance method and the specified object argument
+     *              is not an instance of the class or interface
+     *              declaring the underlying method (or of a subclass
+     *              or implementor thereof); if the number of actual
+     *              and formal parameters differ; if an unwrapping
+     *              conversion for primitive arguments fails; or if,
+     *              after possible unwrapping, a parameter value
+     *              cannot be converted to the corresponding formal
+     *              parameter type by a method invocation conversion;
+     *              or if the returned value cannot be converted to
+     *              the type {@code long} by a widening conversion.
+     * @throws    InvocationTargetException if the underlying method
+     *              throws an exception.
+     * @throws    NullPointerException      if the specified method is null,
+     *              or specified object is null and the method is an instance method.
+     * @throws    ExceptionInInitializerError if the initialization
+     * provoked by this method fails.
+     */
+    public static long invokeLongMethod(Object object, Method method, Object... args)
+            throws InvocationTargetException, IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (method.getReturnType() != long.class) throw new IllegalArgumentException("Illegal return type; expected long");
         try {
             if (trySetAccessible(method)) return (long) method.invoke(object, args);
-        } catch (ClassCastException e) {
-            throw new InvocationTargetException(e);
         } catch (IllegalAccessException ignored) {
         }
-        if (object == null) return CallStaticLongMethod(method.getDeclaringClass(), method, args);
+        if (isStatic(method.getModifiers())) return CallStaticLongMethod(method.getDeclaringClass(), method, args);
         else return CallLongMethod(object, method, args);
     }
 
-    public static float invokeFloatMethod(Object object, Method method, Object... args) throws InvocationTargetException {
+    /**
+     * Invokes the underlying method represented by this {@code Method}
+     * object, on the specified object with the specified parameters.
+     *
+     * @param object  the object the underlying method is invoked from
+     * @param args the arguments used for the method call
+     *
+     * @throws    IllegalArgumentException  if the method is an
+     *              instance method and the specified object argument
+     *              is not an instance of the class or interface
+     *              declaring the underlying method (or of a subclass
+     *              or implementor thereof); if the number of actual
+     *              and formal parameters differ; if an unwrapping
+     *              conversion for primitive arguments fails; or if,
+     *              after possible unwrapping, a parameter value
+     *              cannot be converted to the corresponding formal
+     *              parameter type by a method invocation conversion;
+     *              or if the returned value cannot be converted to
+     *              the type {@code float} by a widening conversion.
+     * @throws    InvocationTargetException if the underlying method
+     *              throws an exception.
+     * @throws    NullPointerException      if the specified method is null,
+     *              or specified object is null and the method is an instance method.
+     * @throws    ExceptionInInitializerError if the initialization
+     * provoked by this method fails.
+     */
+    public static float invokeFloatMethod(Object object, Method method, Object... args)
+            throws InvocationTargetException, IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (method.getReturnType() != float.class) throw new IllegalArgumentException("Illegal return type; expected float");
         try {
             if (trySetAccessible(method)) return (float) method.invoke(object, args);
-        } catch (ClassCastException e) {
-            throw new InvocationTargetException(e);
         } catch (IllegalAccessException ignored) {
         }
-        if (object == null) return CallStaticFloatMethod(method.getDeclaringClass(), method, args);
+        if (isStatic(method.getModifiers())) return CallStaticFloatMethod(method.getDeclaringClass(), method, args);
         else return CallFloatMethod(object, method, args);
     }
 
-    public static double invokeDoubleMethod(Object object, Method method, Object... args) throws InvocationTargetException {
+    /**
+     * Invokes the underlying method represented by this {@code Method}
+     * object, on the specified object with the specified parameters.
+     *
+     * @param object  the object the underlying method is invoked from
+     * @param args the arguments used for the method call
+     *
+     * @throws    IllegalArgumentException  if the method is an
+     *              instance method and the specified object argument
+     *              is not an instance of the class or interface
+     *              declaring the underlying method (or of a subclass
+     *              or implementor thereof); if the number of actual
+     *              and formal parameters differ; if an unwrapping
+     *              conversion for primitive arguments fails; or if,
+     *              after possible unwrapping, a parameter value
+     *              cannot be converted to the corresponding formal
+     *              parameter type by a method invocation conversion;
+     *              or if the returned value cannot be converted to
+     *              the type {@code double} by a widening conversion.
+     * @throws    InvocationTargetException if the underlying method
+     *              throws an exception.
+     * @throws    NullPointerException      if the specified method is null,
+     *              or specified object is null and the method is an instance method.
+     * @throws    ExceptionInInitializerError if the initialization
+     * provoked by this method fails.
+     */
+    public static double invokeDoubleMethod(Object object, Method method, Object... args)
+            throws InvocationTargetException, IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (method.getReturnType() != double.class) throw new IllegalArgumentException("Illegal return type; expected double");
         try {
             if (trySetAccessible(method)) return (double) method.invoke(object, args);
-        } catch (ClassCastException e) {
-            throw new InvocationTargetException(e);
         } catch (IllegalAccessException ignored) {
         }
-        if (object == null) return CallStaticDoubleMethod(method.getDeclaringClass(), method, args);
+        if (isStatic(method.getModifiers())) return CallStaticDoubleMethod(method.getDeclaringClass(), method, args);
         else return CallDoubleMethod(object, method, args);
     }
 
-    public static Object invokeMethod(Object object, Method method, Object... args) throws InvocationTargetException {
+    /**
+     * Invokes the underlying method represented by this {@code Method}
+     * object, on the specified object with the specified parameters.
+     * Individual parameters are automatically unwrapped to match
+     * primitive formal parameters, and both primitive and reference
+     * parameters are subject to method invocation conversions as
+     * necessary.
+     *
+     * <p>If the underlying method is static, then the specified {@code object}
+     * argument is ignored. It may be null.
+     *
+     * <p>If the number of formal parameters required by the underlying method is
+     * 0, the supplied {@code args} array may be of length 0 or null.
+     *
+     * <p>If the underlying method is an instance method, it is invoked
+     * using dynamic method lookup as documented in The Java Language
+     * Specification, section 15.12.4.4; in particular,
+     * overriding based on the runtime type of the target object may occur.
+     *
+     * <p>If the underlying method is static, the class that declared
+     * the method is initialized if it has not already been initialized.
+     *
+     * <p>If the method completes normally, the value it returns is
+     * returned to the caller of invoke; if the value has a primitive
+     * type, it is first appropriately wrapped in an object. However,
+     * if the value has the type of array of a primitive type, the
+     * elements of the array are <i>not</i> wrapped in objects; in
+     * other words, an array of primitive type is returned.  If the
+     * underlying method return type is void, the invocation returns
+     * null.
+     *
+     * @param object  the object the underlying method is invoked from
+     * @param args the arguments used for the method call
+     *
+     * @throws    IllegalArgumentException  if the method is an
+     *              instance method and the specified object argument
+     *              is not an instance of the class or interface
+     *              declaring the underlying method (or of a subclass
+     *              or implementor thereof); if the number of actual
+     *              and formal parameters differ; if an unwrapping
+     *              conversion for primitive arguments fails; or if,
+     *              after possible unwrapping, a parameter value
+     *              cannot be converted to the corresponding formal
+     *              parameter type by a method invocation conversion.
+     * @throws    InvocationTargetException if the underlying method
+     *              throws an exception.
+     * @throws    NullPointerException      if the specified method is null,
+     *              or specified object is null and the method is an instance method.
+     * @throws    ExceptionInInitializerError if the initialization
+     * provoked by this method fails.
+     */
+    public static Object invokeMethod(Object object, Method method, Object... args)
+            throws InvocationTargetException, IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        try {
+            if (trySetAccessible(method)) return method.invoke(object, args);
+        } catch (IllegalAccessException ignored) {
+        }
+        Class<?> returnType = method.getReturnType();
+        if (isStatic(method.getModifiers())) {
+            if (returnType == void.class) {
+                CallStaticVoidMethod(method.getDeclaringClass(), method, args);
+                return null;
+            }
+            else if (returnType == boolean.class) return CallStaticBooleanMethod(method.getDeclaringClass(), method, args);
+            else if (returnType == byte.class) return CallStaticByteMethod(method.getDeclaringClass(), method, args);
+            else if (returnType == char.class) return CallStaticCharMethod(method.getDeclaringClass(), method, args);
+            else if (returnType == short.class) return CallStaticShortMethod(method.getDeclaringClass(), method, args);
+            else if (returnType == int.class) return CallStaticIntMethod(method.getDeclaringClass(), method, args);
+            else if (returnType == long.class) return CallStaticLongMethod(method.getDeclaringClass(), method, args);
+            else if (returnType == float.class) return CallStaticFloatMethod(method.getDeclaringClass(), method, args);
+            else if (returnType == double.class) return CallStaticDoubleMethod(method.getDeclaringClass(), method, args);
+            else return CallStaticObjectMethod(method.getDeclaringClass(), method, args);
+        }
+        else {
+            if (returnType == void.class) {
+                CallVoidMethod(object, method, args);
+                return null;
+            }
+            else if (returnType == boolean.class) return CallBooleanMethod(object, method, args);
+            else if (returnType == byte.class) return CallByteMethod(object, method, args);
+            else if (returnType == char.class) return CallCharMethod(object, method, args);
+            else if (returnType == short.class) return CallShortMethod(object, method, args);
+            else if (returnType == int.class) return CallIntMethod(object, method, args);
+            else if (returnType == long.class) return CallLongMethod(object, method, args);
+            else if (returnType == float.class) return CallFloatMethod(object, method, args);
+            else if (returnType == double.class) return CallDoubleMethod(object, method, args);
+            else return CallObjectMethod(object, method, args);
+        }
+    }
+
+
+    // ---------------- Invoke ----------------
+
+    /**
+     * Invokes the underlying method represented by this {@code Method}
+     * object, on the specified object with the specified parameters,
+     * bypassing all overriding methods.
+     *
+     * @param object  the object the underlying method is invoked from
+     * @param args the arguments used for the method call
+     *
+     * @throws    IllegalArgumentException if the underlying method is
+     *              a static method or the specified object argument
+     *              is not an instance of the class or interface
+     *              declaring the underlying method (or of a subclass
+     *              or implementor thereof); if the number of actual
+     *              and formal parameters differ; if an unwrapping
+     *              conversion for primitive arguments fails; or if,
+     *              after possible unwrapping, a parameter value
+     *              cannot be converted to the corresponding formal
+     *              parameter type by a method invocation conversion;
+     *              or if the method had a return value.
+     * @throws    InvocationTargetException if the underlying method
+     *              throws an exception.
+     * @throws    NullPointerException      if the specified method or specified object is null.
+     * @throws    ExceptionInInitializerError if the initialization
+     * provoked by this method fails.
+     *
+     * @see #invokeNonVirtualMethod(Object, Method, Object...)
+     */
+    public static void invokeNonVirtualVoidMethod(Object object, Method method, Object... args)
+            throws InvocationTargetException, IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (method.getReturnType() != void.class && method.getReturnType() != Void.class) throw new IllegalArgumentException("Illegal return type; expected void");
+        else if (isStatic(method.getModifiers())) throw new IllegalArgumentException("Illegal method modifier; expected non-static");
+        if (LOOKUP != null) {
+            try {
+                LOOKUP.unreflectSpecial(method, method.getDeclaringClass()).bindTo(object).invokeWithArguments(args);
+                return;
+            } catch (WrongMethodTypeException e) {
+                throw new IllegalArgumentException(e);
+            } catch (RuntimeException | Error | InvocationTargetException e) {
+                throw e;
+            } catch (Throwable ignored) {
+            }
+        }
+        CallNonvirtualVoidMethod(object, method.getDeclaringClass(), method, args);
+    }
+
+    /**
+     * Invokes the underlying method represented by this {@code Method}
+     * object, on the specified object with the specified parameters,
+     * bypassing all overriding methods.
+     *
+     * @param object  the object the underlying method is invoked from
+     * @param args the arguments used for the method call
+     *
+     * @throws    IllegalArgumentException if the underlying method is
+     *              a static method or the specified object argument
+     *              is not an instance of the class or interface
+     *              declaring the underlying method (or of a subclass
+     *              or implementor thereof); if the number of actual
+     *              and formal parameters differ; if an unwrapping
+     *              conversion for primitive arguments fails; or if,
+     *              after possible unwrapping, a parameter value
+     *              cannot be converted to the corresponding formal
+     *              parameter type by a method invocation conversion;
+     *              or if the returned value is primitive.
+     * @throws    InvocationTargetException if the underlying method
+     *              throws an exception.
+     * @throws    NullPointerException      if the specified method or specified object is null.
+     * @throws    ExceptionInInitializerError if the initialization
+     * provoked by this method fails.
+     *
+     * @see #invokeNonVirtualMethod(Object, Method, Object...)
+     */
+    public static Object invokeNonVirtualObjectMethod(Object object, Method method, Object... args)
+            throws InvocationTargetException, IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (method.getReturnType().isPrimitive()) throw new IllegalArgumentException("Illegal return type; expected non-primitive");
+        else if (isStatic(method.getModifiers())) throw new IllegalArgumentException("Illegal method modifier; expected non-static");
+        if (LOOKUP != null) {
+            try {
+                return LOOKUP.unreflectSpecial(method, method.getDeclaringClass()).bindTo(object).invokeWithArguments(args);
+            } catch (WrongMethodTypeException e) {
+                throw new IllegalArgumentException(e);
+            } catch (RuntimeException | Error | InvocationTargetException e) {
+                throw e;
+            } catch (Throwable ignored) {
+            }
+        }
+        return CallNonvirtualObjectMethod(object, method.getDeclaringClass(), method, args);
+    }
+
+    /**
+     * Invokes the underlying method represented by this {@code Method}
+     * object, on the specified object with the specified parameters,
+     * bypassing all overriding methods.
+     *
+     * @param object  the object the underlying method is invoked from
+     * @param args the arguments used for the method call
+     *
+     * @throws    IllegalArgumentException if the underlying method is
+     *              a static method or the specified object argument
+     *              is not an instance of the class or interface
+     *              declaring the underlying method (or of a subclass
+     *              or implementor thereof); if the number of actual
+     *              and formal parameters differ; if an unwrapping
+     *              conversion for primitive arguments fails; or if,
+     *              after possible unwrapping, a parameter value
+     *              cannot be converted to the corresponding formal
+     *              parameter type by a method invocation conversion;
+     *              or if the returned value cannot be converted to
+     *              the type {@code boolean} by a widening conversion.
+     * @throws    InvocationTargetException if the underlying method
+     *              throws an exception.
+     * @throws    NullPointerException      if the specified method or specified object is null.
+     * @throws    ExceptionInInitializerError if the initialization
+     * provoked by this method fails.
+     *
+     * @see #invokeNonVirtualMethod(Object, Method, Object...)
+     */
+    public static boolean invokeNonVirtualBooleanMethod(Object object, Method method, Object... args)
+            throws InvocationTargetException, IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (method.getReturnType() != boolean.class) throw new IllegalArgumentException("Illegal return type; expected boolean");
+        else if (isStatic(method.getModifiers())) throw new IllegalArgumentException("Illegal method modifier; expected non-static");
+        if (LOOKUP != null) {
+            try {
+                return (boolean) LOOKUP.unreflectSpecial(method, method.getDeclaringClass()).bindTo(object).invokeWithArguments(args);
+            } catch (WrongMethodTypeException e) {
+                throw new IllegalArgumentException(e);
+            } catch (RuntimeException | Error | InvocationTargetException e) {
+                throw e;
+            } catch (Throwable ignored) {
+            }
+        }
+        return CallNonvirtualBooleanMethod(object, method.getDeclaringClass(), method, args);
+    }
+
+    /**
+     * Invokes the underlying method represented by this {@code Method}
+     * object, on the specified object with the specified parameters,
+     * bypassing all overriding methods.
+     *
+     * @param object  the object the underlying method is invoked from
+     * @param args the arguments used for the method call
+     *
+     * @throws    IllegalArgumentException if the underlying method is
+     *              a static method or the specified object argument
+     *              is not an instance of the class or interface
+     *              declaring the underlying method (or of a subclass
+     *              or implementor thereof); if the number of actual
+     *              and formal parameters differ; if an unwrapping
+     *              conversion for primitive arguments fails; or if,
+     *              after possible unwrapping, a parameter value
+     *              cannot be converted to the corresponding formal
+     *              parameter type by a method invocation conversion;
+     *              or if the returned value cannot be converted to
+     *              the type {@code byte} by a widening conversion.
+     * @throws    InvocationTargetException if the underlying method
+     *              throws an exception.
+     * @throws    NullPointerException      if the specified method or specified object is null.
+     * @throws    ExceptionInInitializerError if the initialization
+     * provoked by this method fails.
+     *
+     * @see #invokeNonVirtualMethod(Object, Method, Object...)
+     */
+    public static byte invokeNonVirtualByteMethod(Object object, Method method, Object... args)
+            throws InvocationTargetException, IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (method.getReturnType() != byte.class) throw new IllegalArgumentException("Illegal return type; expected byte");
+        else if (isStatic(method.getModifiers())) throw new IllegalArgumentException("Illegal method modifier; expected non-static");
+        if (LOOKUP != null) {
+            try {
+                return (byte) LOOKUP.unreflectSpecial(method, method.getDeclaringClass()).bindTo(object).invokeWithArguments(args);
+            } catch (WrongMethodTypeException e) {
+                throw new IllegalArgumentException(e);
+            } catch (RuntimeException | Error | InvocationTargetException e) {
+                throw e;
+            } catch (Throwable ignored) {
+            }
+        }
+        return CallNonvirtualByteMethod(object, method.getDeclaringClass(), method, args);
+    }
+
+    /**
+     * Invokes the underlying method represented by this {@code Method}
+     * object, on the specified object with the specified parameters,
+     * bypassing all overriding methods.
+     *
+     * @param object  the object the underlying method is invoked from
+     * @param args the arguments used for the method call
+     *
+     * @throws    IllegalArgumentException if the underlying method is
+     *              a static method or the specified object argument
+     *              is not an instance of the class or interface
+     *              declaring the underlying method (or of a subclass
+     *              or implementor thereof); if the number of actual
+     *              and formal parameters differ; if an unwrapping
+     *              conversion for primitive arguments fails; or if,
+     *              after possible unwrapping, a parameter value
+     *              cannot be converted to the corresponding formal
+     *              parameter type by a method invocation conversion;
+     *              or if the returned value cannot be converted to
+     *              the type {@code char} by a widening conversion.
+     * @throws    InvocationTargetException if the underlying method
+     *              throws an exception.
+     * @throws    NullPointerException      if the specified method or specified object is null.
+     * @throws    ExceptionInInitializerError if the initialization
+     * provoked by this method fails.
+     *
+     * @see #invokeNonVirtualMethod(Object, Method, Object...)
+     */
+    public static char invokeNonVirtualCharMethod(Object object, Method method, Object... args)
+            throws InvocationTargetException, IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (method.getReturnType() != char.class) throw new IllegalArgumentException("Illegal return type; expected char");
+        else if (isStatic(method.getModifiers())) throw new IllegalArgumentException("Illegal method modifier; expected non-static");
+        if (LOOKUP != null) {
+            try {
+                return (char) LOOKUP.unreflectSpecial(method, method.getDeclaringClass()).bindTo(object).invokeWithArguments(args);
+            } catch (WrongMethodTypeException e) {
+                throw new IllegalArgumentException(e);
+            } catch (RuntimeException | Error | InvocationTargetException e) {
+                throw e;
+            } catch (Throwable ignored) {
+            }
+        }
+        return CallNonvirtualCharMethod(object, method.getDeclaringClass(), method, args);
+    }
+
+    /**
+     * Invokes the underlying method represented by this {@code Method}
+     * object, on the specified object with the specified parameters,
+     * bypassing all overriding methods.
+     *
+     * @param object  the object the underlying method is invoked from
+     * @param args the arguments used for the method call
+     *
+     * @throws    IllegalArgumentException if the underlying method is
+     *              a static method or the specified object argument
+     *              is not an instance of the class or interface
+     *              declaring the underlying method (or of a subclass
+     *              or implementor thereof); if the number of actual
+     *              and formal parameters differ; if an unwrapping
+     *              conversion for primitive arguments fails; or if,
+     *              after possible unwrapping, a parameter value
+     *              cannot be converted to the corresponding formal
+     *              parameter type by a method invocation conversion;
+     *              or if the returned value cannot be converted to
+     *              the type {@code short} by a widening conversion.
+     * @throws    InvocationTargetException if the underlying method
+     *              throws an exception.
+     * @throws    NullPointerException      if the specified method or specified object is null.
+     * @throws    ExceptionInInitializerError if the initialization
+     * provoked by this method fails.
+     *
+     * @see #invokeNonVirtualMethod(Object, Method, Object...)
+     */
+    public static short invokeNonVirtualShortMethod(Object object, Method method, Object... args)
+            throws InvocationTargetException, IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (method.getReturnType() != short.class) throw new IllegalArgumentException("Illegal return type; expected short");
+        else if (isStatic(method.getModifiers())) throw new IllegalArgumentException("Illegal method modifier; expected non-static");
+        if (LOOKUP != null) {
+            try {
+                return (short) LOOKUP.unreflectSpecial(method, method.getDeclaringClass()).bindTo(object).invokeWithArguments(args);
+            } catch (WrongMethodTypeException e) {
+                throw new IllegalArgumentException(e);
+            } catch (RuntimeException | Error | InvocationTargetException e) {
+                throw e;
+            } catch (Throwable ignored) {
+            }
+        }
+        return CallNonvirtualShortMethod(object, method.getDeclaringClass(), method, args);
+    }
+
+    /**
+     * Invokes the underlying method represented by this {@code Method}
+     * object, on the specified object with the specified parameters,
+     * bypassing all overriding methods.
+     *
+     * @param object  the object the underlying method is invoked from
+     * @param args the arguments used for the method call
+     *
+     * @throws    IllegalArgumentException if the underlying method is
+     *              a static method or the specified object argument
+     *              is not an instance of the class or interface
+     *              declaring the underlying method (or of a subclass
+     *              or implementor thereof); if the number of actual
+     *              and formal parameters differ; if an unwrapping
+     *              conversion for primitive arguments fails; or if,
+     *              after possible unwrapping, a parameter value
+     *              cannot be converted to the corresponding formal
+     *              parameter type by a method invocation conversion;
+     *              or if the returned value cannot be converted to
+     *              the type {@code int} by a widening conversion.
+     * @throws    InvocationTargetException if the underlying method
+     *              throws an exception.
+     * @throws    NullPointerException      if the specified method or specified object is null.
+     * @throws    ExceptionInInitializerError if the initialization
+     * provoked by this method fails.
+     *
+     * @see #invokeNonVirtualMethod(Object, Method, Object...)
+     */
+    public static int invokeNonVirtualIntMethod(Object object, Method method, Object... args)
+            throws InvocationTargetException, IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (method.getReturnType() != int.class) throw new IllegalArgumentException("Illegal return type; expected int");
+        else if (isStatic(method.getModifiers())) throw new IllegalArgumentException("Illegal method modifier; expected non-static");
+        if (LOOKUP != null) {
+            try {
+                return (int) LOOKUP.unreflectSpecial(method, method.getDeclaringClass()).bindTo(object).invokeWithArguments(args);
+            } catch (WrongMethodTypeException e) {
+                throw new IllegalArgumentException(e);
+            } catch (RuntimeException | Error | InvocationTargetException e) {
+                throw e;
+            } catch (Throwable ignored) {
+            }
+        }
+        return CallNonvirtualIntMethod(object, method.getDeclaringClass(), method, args);
+    }
+
+    /**
+     * Invokes the underlying method represented by this {@code Method}
+     * object, on the specified object with the specified parameters,
+     * bypassing all overriding methods.
+     *
+     * @param object  the object the underlying method is invoked from
+     * @param args the arguments used for the method call
+     *
+     * @throws    IllegalArgumentException if the underlying method is
+     *              a static method or the specified object argument
+     *              is not an instance of the class or interface
+     *              declaring the underlying method (or of a subclass
+     *              or implementor thereof); if the number of actual
+     *              and formal parameters differ; if an unwrapping
+     *              conversion for primitive arguments fails; or if,
+     *              after possible unwrapping, a parameter value
+     *              cannot be converted to the corresponding formal
+     *              parameter type by a method invocation conversion;
+     *              or if the returned value cannot be converted to
+     *              the type {@code long} by a widening conversion.
+     * @throws    InvocationTargetException if the underlying method
+     *              throws an exception.
+     * @throws    NullPointerException      if the specified method or specified object is null.
+     * @throws    ExceptionInInitializerError if the initialization
+     * provoked by this method fails.
+     *
+     * @see #invokeNonVirtualMethod(Object, Method, Object...)
+     */
+    public static long invokeNonVirtualLongMethod(Object object, Method method, Object... args)
+            throws InvocationTargetException, IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (method.getReturnType() != long.class) throw new IllegalArgumentException("Illegal return type; expected long");
+        else if (isStatic(method.getModifiers())) throw new IllegalArgumentException("Illegal method modifier; expected non-static");
+        if (LOOKUP != null) {
+            try {
+                return (long) LOOKUP.unreflectSpecial(method, method.getDeclaringClass()).bindTo(object).invokeWithArguments(args);
+            } catch (WrongMethodTypeException e) {
+                throw new IllegalArgumentException(e);
+            } catch (RuntimeException | Error | InvocationTargetException e) {
+                throw e;
+            } catch (Throwable ignored) {
+            }
+        }
+        return CallNonvirtualLongMethod(object, method.getDeclaringClass(), method, args);
+    }
+
+    /**
+     * Invokes the underlying method represented by this {@code Method}
+     * object, on the specified object with the specified parameters,
+     * bypassing all overriding methods.
+     *
+     * @param object  the object the underlying method is invoked from
+     * @param args the arguments used for the method call
+     *
+     * @throws    IllegalArgumentException if the underlying method is
+     *              a static method or the specified object argument
+     *              is not an instance of the class or interface
+     *              declaring the underlying method (or of a subclass
+     *              or implementor thereof); if the number of actual
+     *              and formal parameters differ; if an unwrapping
+     *              conversion for primitive arguments fails; or if,
+     *              after possible unwrapping, a parameter value
+     *              cannot be converted to the corresponding formal
+     *              parameter type by a method invocation conversion;
+     *              or if the returned value cannot be converted to
+     *              the type {@code float} by a widening conversion.
+     * @throws    InvocationTargetException if the underlying method
+     *              throws an exception.
+     * @throws    NullPointerException      if the specified method or specified object is null.
+     * @throws    ExceptionInInitializerError if the initialization
+     * provoked by this method fails.
+     *
+     * @see #invokeNonVirtualMethod(Object, Method, Object...)
+     */
+    public static float invokeNonVirtualFloatMethod(Object object, Method method, Object... args)
+            throws InvocationTargetException, IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (method.getReturnType() != float.class) throw new IllegalArgumentException("Illegal return type; expected float");
+        else if (isStatic(method.getModifiers())) throw new IllegalArgumentException("Illegal method modifier; expected non-static");
+        if (LOOKUP != null) {
+            try {
+                return (float) LOOKUP.unreflectSpecial(method, method.getDeclaringClass()).bindTo(object).invokeWithArguments(args);
+            } catch (WrongMethodTypeException e) {
+                throw new IllegalArgumentException(e);
+            } catch (RuntimeException | Error | InvocationTargetException e) {
+                throw e;
+            } catch (Throwable ignored) {
+            }
+        }
+        return CallNonvirtualFloatMethod(object, method.getDeclaringClass(), method, args);
+    }
+
+    /**
+     * Invokes the underlying method represented by this {@code Method}
+     * object, on the specified object with the specified parameters,
+     * bypassing all overriding methods.
+     *
+     * @param object  the object the underlying method is invoked from
+     * @param args the arguments used for the method call
+     *
+     * @throws    IllegalArgumentException if the underlying method is
+     *              a static method or the specified object argument
+     *              is not an instance of the class or interface
+     *              declaring the underlying method (or of a subclass
+     *              or implementor thereof); if the number of actual
+     *              and formal parameters differ; if an unwrapping
+     *              conversion for primitive arguments fails; or if,
+     *              after possible unwrapping, a parameter value
+     *              cannot be converted to the corresponding formal
+     *              parameter type by a method invocation conversion;
+     *              or if the returned value cannot be converted to
+     *              the type {@code double} by a widening conversion.
+     * @throws    InvocationTargetException if the underlying method
+     *              throws an exception.
+     * @throws    NullPointerException      if the specified method or specified object is null.
+     * @throws    ExceptionInInitializerError if the initialization
+     * provoked by this method fails.
+     *
+     * @see #invokeNonVirtualMethod(Object, Method, Object...)
+     */
+    public static double invokeNonVirtualDoubleMethod(Object object, Method method, Object... args)
+            throws InvocationTargetException, IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (method.getReturnType() != double.class) throw new IllegalArgumentException("Illegal return type; expected double");
+        else if (isStatic(method.getModifiers())) throw new IllegalArgumentException("Illegal method modifier; expected non-static");
+        if (LOOKUP != null) {
+            try {
+                return (double) LOOKUP.unreflectSpecial(method, method.getDeclaringClass()).bindTo(object).invokeWithArguments(args);
+            } catch (WrongMethodTypeException e) {
+                throw new IllegalArgumentException(e);
+            } catch (RuntimeException | Error | InvocationTargetException e) {
+                throw e;
+            } catch (Throwable ignored) {
+            }
+        }
+        return CallNonvirtualDoubleMethod(object, method.getDeclaringClass(), method, args);
+    }
+
+    /**
+     * Invokes the underlying method represented by this {@code Method}
+     * object, on the specified object with the specified parameters.
+     * Individual parameters are automatically unwrapped to match
+     * primitive formal parameters, and both primitive and reference
+     * parameters are subject to method invocation conversions as
+     * necessary.
+     *
+     * <p>If the number of formal parameters required by the underlying method is
+     * 0, the supplied {@code args} array may be of length 0 or null.
+     *
+     * <p>If the underlying method is an instance method, it is invoked
+     * using special method lookup bypassing all overriding methods which
+     * documented in The Java Language Specification, section 15.12.4.4;
+     * in particular, overriding based on the runtime type of the target
+     * object never occur.
+     *
+     * <p>If the method completes normally, the value it returns is
+     * returned to the caller of invoke; if the value has a primitive
+     * type, it is first appropriately wrapped in an object. However,
+     * if the value has the type of array of a primitive type, the
+     * elements of the array are <i>not</i> wrapped in objects; in
+     * other words, an array of primitive type is returned.  If the
+     * underlying method return type is void, the invocation returns
+     * null.
+     *
+     * @param object  the object the underlying method is invoked from
+     * @param args the arguments used for the method call
+     *
+     * @throws    IllegalArgumentException if the underlying method is
+     *              a static method or the specified object argument
+     *              is not an instance of the class or interface
+     *              declaring the underlying method (or of a subclass
+     *              or implementor thereof); if the number of actual
+     *              and formal parameters differ; if an unwrapping
+     *              conversion for primitive arguments fails; or if,
+     *              after possible unwrapping, a parameter value
+     *              cannot be converted to the corresponding formal
+     *              parameter type by a method invocation conversion.
+     * @throws    InvocationTargetException if the underlying method
+     *              throws an exception.
+     * @throws    NullPointerException      if the specified method or specified object is null.
+     * @throws    ExceptionInInitializerError if the initialization
+     * provoked by this method fails.
+     */
+    public static Object invokeNonVirtualMethod(Object object, Method method, Object... args)
+            throws InvocationTargetException, IllegalArgumentException, NullPointerException, ExceptionInInitializerError {
+        if (LOOKUP != null) {
+            try {
+                return LOOKUP.unreflectSpecial(method, method.getDeclaringClass()).bindTo(object).invokeWithArguments(args);
+            } catch (WrongMethodTypeException e) {
+                throw new IllegalArgumentException(e);
+            } catch (RuntimeException | Error | InvocationTargetException e) {
+                throw e;
+            } catch (Throwable ignored) {
+            }
+        }
         Class<?> returnType = method.getReturnType();
         if (returnType == void.class) {
-            invokeVoidMethod(object, method, args);
+            invokeNonVirtualVoidMethod(object, method, args);
             return null;
         }
-        else if (returnType == int.class) return invokeIntMethod(object, method, args);
-        else if (returnType == long.class) return invokeLongMethod(object, method, args);
-        else if (returnType == short.class) return invokeShortMethod(object, method, args);
-        else if (returnType == char.class) return invokeCharMethod(object, method, args);
-        else if (returnType == boolean.class) return invokeBooleanMethod(object, method, args);
-        else if (returnType == byte.class) return invokeByteMethod(object, method, args);
-        else if (returnType == float.class) return invokeFloatMethod(object, method, args);
-        else if (returnType == double.class) return invokeDoubleMethod(object, method, args);
-        else return invokeObjectMethod(object, method, args);
+        else if (returnType == int.class) return invokeNonVirtualIntMethod(object, method, args);
+        else if (returnType == long.class) return invokeNonVirtualLongMethod(object, method, args);
+        else if (returnType == short.class) return invokeNonVirtualShortMethod(object, method, args);
+        else if (returnType == char.class) return invokeNonVirtualCharMethod(object, method, args);
+        else if (returnType == boolean.class) return invokeNonVirtualBooleanMethod(object, method, args);
+        else if (returnType == byte.class) return invokeNonVirtualByteMethod(object, method, args);
+        else if (returnType == float.class) return invokeNonVirtualFloatMethod(object, method, args);
+        else if (returnType == double.class) return invokeNonVirtualDoubleMethod(object, method, args);
+        else return invokeNonVirtualObjectMethod(object, method, args);
     }
 
-    public static void invokeNonVirtualVoidMethod(Object object, Class<?> clazz, Method method, Object... args) throws InvocationTargetException {
-        try {
-            MethodHandles.lookup().unreflectSpecial(method, clazz).invoke(args);
-            return;
-        } catch (WrongMethodTypeException | ClassCastException e) {
-            throw new InvocationTargetException(e);
-        } catch (RuntimeException e) {
-            throw e;
-        } catch (Throwable ignored) {
+
+    // ---------------- Class ----------------
+
+    /**
+     * Converts an array of bytes into an instance of class {@code Class},
+     * with a given {@code ProtectionDomain}.
+     *
+     * <p> If the given {@code ProtectionDomain} is {@code null},
+     * then a default protection domain will be assigned to the class.
+     * Before the class can be used it must be resolved.
+     *
+     * <p> You should always pass in the <a href="#binary-name">binary name</a> of the
+     * class you are defining as well as the bytes.  This ensures that the
+     * class you are defining is indeed the class you think it is.
+     *
+     * <p> This method defines a package in this class loader corresponding to the
+     * package of the {@code Class} (if such a package has not already been defined
+     * in this class loader). The name of the defined package is derived from
+     * the <a href="#binary-name">binary name</a> of the class specified by
+     * the byte array {@code bytecode}.
+     * Other properties of the defined package are as specified by {@link Package}.
+     *
+     * @param  name
+     *         The expected <a href="#binary-name">binary name</a> of the class, or
+     *         {@code null} if not known
+     *
+     * @param  bytecode
+     *         The bytes that make up the class data. The bytes in positions
+     *         {@code offset} through {@code offset+length-1} should have the format
+     *         of a valid class file as defined by
+     *         <cite>The Java Virtual Machine Specification</cite>.
+     *
+     * @param  offset
+     *         The start offset in {@code bytecode} of the class data
+     *
+     * @param  length
+     *         The length of the class data
+     *
+     * @param  protectionDomain
+     *         The {@code ProtectionDomain} of the class
+     *
+     * @return  The {@code Class} object created from the data,
+     *          and {@code ProtectionDomain}.
+     *
+     * @throws  ClassFormatError
+     *          If the data did not contain a valid class
+     *
+     * @throws  NoClassDefFoundError
+     *          If {@code name} is not {@code null} and not equal to the
+     *          <a href="#binary-name">binary name</a> of the class specified by {@code bytecode}
+     *
+     * @throws  IndexOutOfBoundsException
+     *          If either {@code offset} or {@code length} is negative, or if
+     *          {@code offset+length} is greater than {@code bytecode.length}.
+     *
+     * @throws  NullPointerException
+     *          If {@code bytecode} is {@code null}.
+     */
+    public static Class<?> defineClass(String name, ClassLoader classLoader, byte[] bytecode, int offset, int length, ProtectionDomain protectionDomain)
+            throws ClassFormatError, NoClassDefFoundError, IndexOutOfBoundsException, NullPointerException {
+        if (classLoader != null) {
+            try {
+                Method method = ClassLoader.class.getDeclaredMethod("defineClass", String.class, byte[].class, int.class, int.class, ProtectionDomain.class);
+                return (Class<?>) invokeObjectMethod(classLoader, method, name, bytecode, offset, length, protectionDomain);
+            } catch (InvocationTargetException | NoSuchMethodException ignored) {
+            }
         }
-        CallNonvirtualVoidMethod(object, clazz, method, args);
+        return JVM_DefineClass(name == null ? null : name.replace('.', '/'), classLoader, bytecode, offset, length, protectionDomain);
     }
 
-    public static Object invokeNonVirtualObjectMethod(Object object, Class<?> clazz, Method method, Object... args) throws InvocationTargetException {
-        try {
-            return MethodHandles.lookup().unreflectSpecial(method, clazz).invoke(args);
-        } catch (WrongMethodTypeException | ClassCastException e) {
-            throw new InvocationTargetException(e);
-        } catch (RuntimeException e) {
-            throw e;
-        } catch (Throwable ignored) {
+    /**
+     * Converts a {@link java.nio.ByteBuffer ByteBuffer} into an instance
+     * of class {@code Class}, with the given {@code ProtectionDomain}.
+     * If the given {@code ProtectionDomain} is {@code null}, then a default
+     * protection domain will be assigned to the class.
+     * Before the class can be used it must be resolved.
+     *
+     * <p> An invocation of this method of the form
+     * {@code defineClass(}<i>name</i>{@code ,}<i>cl</i>{@code ,}
+     * <i>bytecode</i>{@code ,} <i>pd</i>{@code )} yields exactly the same
+     * result as the statements
+     *
+     *<p> <code>
+     * ...<br>
+     * byte[] temp = new byte[bytecode.{@link
+     * java.nio.ByteBuffer#remaining remaining}()];<br>
+     *     bytecode.{@link java.nio.ByteBuffer#get(byte[])
+     * get}(temp);<br>
+     *     return {@link #defineClass(String, ClassLoader, byte[], int, int, ProtectionDomain)
+     * defineClass}(name, cl, temp, 0,
+     * temp.length, pd);<br>
+     * </code></p>
+     *
+     * @param  name
+     *         The expected <a href="#binary-name">binary name</a>. of the class, or
+     *         {@code null} if not known
+     *
+     * @param  bytecode
+     *         The bytes that make up the class data. The bytes from positions
+     *         {@code bytecode.position()} through {@code bytecode.position() + bytecode.limit() -1
+     *         } should have the format of a valid class file as defined by
+     *         <cite>The Java Virtual Machine Specification</cite>.
+     *
+     * @param  protectionDomain
+     *         The {@code ProtectionDomain} of the class, or {@code null}.
+     *
+     * @return  The {@code Class} object created from the data,
+     *          and {@code ProtectionDomain}.
+     *
+     * @throws  ClassFormatError
+     *          If the data did not contain a valid class.
+     *
+     * @throws  NoClassDefFoundError
+     *          If {@code name} is not {@code null} and not equal to the
+     *          <a href="#binary-name">binary name</a> of the class specified by {@code bytecode}
+     *
+     * @throws  NullPointerException
+     *          If {@code bytecode} is {@code null}.
+     *
+     * @see      #defineClass(String, ClassLoader, byte[], int, int, ProtectionDomain)
+     */
+    public static Class<?> defineClass(String name, ClassLoader classLoader, ByteBuffer bytecode, ProtectionDomain protectionDomain)
+            throws ClassFormatError, NoClassDefFoundError, NullPointerException {
+        if (classLoader != null) {
+            try {
+                Method method = ClassLoader.class.getDeclaredMethod("defineClass", String.class, ByteBuffer.class, ProtectionDomain.class);
+                return (Class<?>) invokeObjectMethod(classLoader, method, name, bytecode, protectionDomain);
+            } catch (InvocationTargetException | NoSuchMethodException ignored) {
+            }
         }
-        return CallNonvirtualObjectMethod(object, clazz, method, args);
+        int length = bytecode.remaining();
+        if (bytecode.isDirect()) return JVM_DefineClass(name.replace('.', '/'), classLoader, bytecode, length, protectionDomain);
+        else if (bytecode.hasArray()) {
+            return JVM_DefineClass(name.replace('.', '/'), classLoader, bytecode.array(),
+                    bytecode.position() + bytecode.arrayOffset(), length, protectionDomain);
+        }
+        else {
+            byte[] array = new byte[length];
+            bytecode.get(array);
+            return JVM_DefineClass(name.replace('.', '/'), classLoader, array, 0, length, protectionDomain);
+        }
     }
 
-    public static boolean invokeNonVirtualBooleanMethod(Object object, Class<?> clazz, Method method, Object... args) throws InvocationTargetException {
-        try {
-            return (boolean) MethodHandles.lookup().unreflectSpecial(method, clazz).invoke(args);
-        } catch (WrongMethodTypeException | ClassCastException e) {
-            throw new InvocationTargetException(e);
-        } catch (RuntimeException e) {
-            throw e;
-        } catch (Throwable ignored) {
-        }
-        return CallNonvirtualBooleanMethod(object, clazz, method, args);
-    }
 
-    public static byte invokeNonVirtualByteMethod(Object object, Class<?> clazz, Method method, Object... args) throws InvocationTargetException {
-        try {
-            return (byte) MethodHandles.lookup().unreflectSpecial(method, clazz).invoke(args);
-        } catch (WrongMethodTypeException | ClassCastException e) {
-            throw new InvocationTargetException(e);
-        } catch (RuntimeException e) {
-            throw e;
-        } catch (Throwable ignored) {
-        }
-        return CallNonvirtualByteMethod(object, clazz, method, args);
-    }
-
-    public static char invokeNonVirtualCharMethod(Object object, Class<?> clazz, Method method, Object... args) throws InvocationTargetException {
-        try {
-            return (char) MethodHandles.lookup().unreflectSpecial(method, clazz).invoke(args);
-        } catch (WrongMethodTypeException | ClassCastException e) {
-            throw new InvocationTargetException(e);
-        } catch (RuntimeException e) {
-            throw e;
-        } catch (Throwable ignored) {
-        }
-        return CallNonvirtualCharMethod(object, clazz, method, args);
-    }
-
-    public static short invokeNonVirtualShortMethod(Object object, Class<?> clazz, Method method, Object... args) throws InvocationTargetException {
-        try {
-            return (short) MethodHandles.lookup().unreflectSpecial(method, clazz).invoke(args);
-        } catch (WrongMethodTypeException | ClassCastException e) {
-            throw new InvocationTargetException(e);
-        } catch (RuntimeException e) {
-            throw e;
-        } catch (Throwable ignored) {
-        }
-        return CallNonvirtualShortMethod(object, clazz, method, args);
-    }
-
-    public static int invokeNonVirtualIntMethod(Object object, Class<?> clazz, Method method, Object... args) throws InvocationTargetException {
-        try {
-            return (int) MethodHandles.lookup().unreflectSpecial(method, clazz).invoke(args);
-        } catch (WrongMethodTypeException | ClassCastException e) {
-            throw new InvocationTargetException(e);
-        } catch (RuntimeException e) {
-            throw e;
-        } catch (Throwable ignored) {
-        }
-        return CallNonvirtualIntMethod(object, clazz, method, args);
-    }
-
-    public static long invokeNonVirtualLongMethod(Object object, Class<?> clazz, Method method, Object... args) throws InvocationTargetException {
-        try {
-            return (long) MethodHandles.lookup().unreflectSpecial(method, clazz).invoke(args);
-        } catch (WrongMethodTypeException | ClassCastException e) {
-            throw new InvocationTargetException(e);
-        } catch (RuntimeException e) {
-            throw e;
-        } catch (Throwable ignored) {
-        }
-        return CallNonvirtualLongMethod(object, clazz, method, args);
-    }
-
-    public static float invokeNonVirtualFloatMethod(Object object, Class<?> clazz, Method method, Object... args) throws InvocationTargetException {
-        try {
-            return (float) MethodHandles.lookup().unreflectSpecial(method, clazz).invoke(args);
-        } catch (WrongMethodTypeException | ClassCastException e) {
-            throw new InvocationTargetException(e);
-        } catch (RuntimeException e) {
-            throw e;
-        } catch (Throwable ignored) {
-        }
-        return CallNonvirtualFloatMethod(object, clazz, method, args);
-    }
-
-    public static double invokeNonVirtualDoubleMethod(Object object, Class<?> clazz, Method method, Object... args) throws InvocationTargetException {
-        try {
-            return (double) MethodHandles.lookup().unreflectSpecial(method, clazz).invoke(args);
-        } catch (WrongMethodTypeException | ClassCastException e) {
-            throw new InvocationTargetException(e);
-        } catch (RuntimeException e) {
-            throw e;
-        } catch (Throwable ignored) {
-        }
-        return CallNonvirtualDoubleMethod(object, clazz, method, args);
-    }
-
-    public static Object invokeNonVirtualMethod(Object object, Class<?> clazz, Method method, Object... args) throws InvocationTargetException {
-        Class<?> returnType = method.getReturnType();
-        if (returnType == void.class) {
-            invokeNonVirtualVoidMethod(object, clazz, method, args);
-            return null;
-        }
-        else if (returnType == int.class) return invokeNonVirtualIntMethod(object, clazz, method, args);
-        else if (returnType == long.class) return invokeNonVirtualLongMethod(object, clazz, method, args);
-        else if (returnType == short.class) return invokeNonVirtualShortMethod(object, clazz, method, args);
-        else if (returnType == char.class) return invokeNonVirtualCharMethod(object, clazz, method, args);
-        else if (returnType == boolean.class) return invokeNonVirtualBooleanMethod(object, clazz, method, args);
-        else if (returnType == byte.class) return invokeNonVirtualByteMethod(object, clazz, method, args);
-        else if (returnType == float.class) return invokeNonVirtualFloatMethod(object, clazz, method, args);
-        else if (returnType == double.class) return invokeNonVirtualDoubleMethod(object, clazz, method, args);
-        else return invokeNonVirtualObjectMethod(object, clazz, method, args);
-    }
+    // ---------------- JNI ----------------
 
     private static native<T> T AllocObject(Class<T> clazz) throws InstantiationException;
     private static native<T> T NewObject(Class<T> clazz, Constructor<T> constructor, Object... args)
@@ -770,42 +2114,7 @@ public final class Scalpel {
     private static native float CallStaticFloatMethod(Class<?> clazz, Method method, Object... args) throws InvocationTargetException;
     private static native double CallStaticDoubleMethod(Class<?> clazz, Method method, Object... args) throws InvocationTargetException;
 
-
-    // ---------------- Class ----------------
-
-    public static Class<?> defineClass(String name, ClassLoader classLoader, byte[] bytecode, int offset, int length, ProtectionDomain protectionDomain) {
-        if (classLoader != null) {
-            try {
-                Method method = ClassLoader.class.getDeclaredMethod("defineClass", String.class, byte[].class, int.class, int.class, ProtectionDomain.class);
-                return (Class<?>) invokeObjectMethod(classLoader, method, name, bytecode, offset, length, protectionDomain);
-            } catch (InvocationTargetException | NoSuchMethodException ignored) {
-            }
-        }
-        return JVM_DefineClass(name.replace('.', '/'), classLoader, bytecode, offset, length, protectionDomain);
-    }
-
-    public static Class<?> defineClass(String name, ClassLoader classLoader, ByteBuffer bytecode, ProtectionDomain protectionDomain) {
-        if (classLoader != null) {
-            try {
-                Method method = ClassLoader.class.getDeclaredMethod("defineClass", String.class, ByteBuffer.class, ProtectionDomain.class);
-                return (Class<?>) invokeObjectMethod(classLoader, method, name, bytecode, protectionDomain);
-            } catch (InvocationTargetException | NoSuchMethodException ignored) {
-            }
-        }
-        int length = bytecode.remaining();
-        if (bytecode.isDirect()) return JVM_DefineClass(name.replace('.', '/'), classLoader, bytecode, length, protectionDomain);
-        else if (bytecode.hasArray()) {
-            return JVM_DefineClass(name.replace('.', '/'), classLoader, bytecode.array(),
-                    bytecode.position() + bytecode.arrayOffset(), length, protectionDomain);
-        }
-        else {
-            byte[] array = new byte[length];
-            bytecode.get(array);
-            return JVM_DefineClass(name.replace('.', '/'), classLoader, array, 0, length, protectionDomain);
-        }
-    }
-
-    private static native Class<?> JVM_DefineClass(String name, ClassLoader loader, byte[] buf, int off, int len, ProtectionDomain pd);
-    private static native Class<?> JVM_DefineClass(String name, ClassLoader loader, ByteBuffer buf, int len, ProtectionDomain pd);
+    private static native Class<?> JVM_DefineClass(String name, ClassLoader loader, byte[] buf, int off, int len, ProtectionDomain pd) throws ClassFormatError, NoClassDefFoundError, IndexOutOfBoundsException;
+    private static native Class<?> JVM_DefineClass(String name, ClassLoader loader, ByteBuffer buf, int len, ProtectionDomain pd) throws ClassFormatError, NoClassDefFoundError;
 
 }
